@@ -2,6 +2,8 @@
 
 A RESTful backend API for managing support tickets across multiple organizations. Built with Spring Boot 4, Java 25, and PostgreSQL.
 
+> **Live API:** https://helpdesk-ticketing-system-mi7f.onrender.com
+
 ---
 
 ## Table of Contents
@@ -63,7 +65,7 @@ Ticket numbers are auto-generated in the format `HD-2026-XXXXXX` using the datab
 | Database | PostgreSQL |
 | Validation | Jakarta Bean Validation |
 | Boilerplate reduction | Lombok |
-| API Docs | Springdoc OpenAPI 3.0.2 (Swagger UI) |
+| API Docs | Postman |
 | Build tool | Maven (Maven Wrapper included) |
 | Containerization | Docker (eclipse-temurin:25-jdk) |
 
@@ -222,7 +224,7 @@ OTHER
 
 Base URL: `https://helpdesk-ticketing-system-mi7f.onrender.com`
 
-Swagger UI available at: `https://helpdesk-ticketing-system-mi7f.onrender.com/swagger-ui.html`
+API tested via Postman.
 
 ---
 
@@ -568,10 +570,7 @@ export DB_PASSWORD=yourpassword
 
 4. The API is available at `http://localhost:8080`
 
-5. Swagger UI is available at `http://localhost:8080/swagger-ui.html`
-
 > **Deployed API:** `https://helpdesk-ticketing-system-mi7f.onrender.com`
-> **Deployed Swagger UI:** `https://helpdesk-ticketing-system-mi7f.onrender.com/swagger-ui.html`
 
 ---
 
