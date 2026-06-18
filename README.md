@@ -6,6 +6,8 @@ A RESTful backend API for managing support tickets across multiple organizations
 
 ## Table of Contents
 
+- [Problem Statement](#problem-statement)
+- [Problem Solution](#problem-solution)
 - [Overview](#overview)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
@@ -24,6 +26,18 @@ A RESTful backend API for managing support tickets across multiple organizations
 - [Running Locally](#running-locally)
 - [Running with Docker](#running-with-docker)
 - [Postman Screenshots](#postman-screenshots)
+
+---
+
+## Problem Statement
+
+In organizations with multiple teams and departments, managing customer support requests manually leads to inefficiencies such as lost or untracked issues, lack of accountability, and no structured visibility into the status of a request. There is no centralized system to record, assign, and monitor support tickets across different organizational units, resulting in delayed resolutions and poor customer experience.
+
+---
+
+## Problem Solution
+
+The HelpDesk Ticketing System addresses these challenges by providing a centralized, multi-tenant RESTful backend API that structures the entire support workflow. Every support request is captured as a ticket, automatically linked to the raising customer's organization, and tracked through a well-defined lifecycle — Open, Assigned, In Progress, Resolved, Reopened, and Closed. Each ticket is assigned a unique human-readable identifier, categorized by type and priority, and timestamped at every stage. The system supports multiple roles — Super Admin, Org Admin, Support Agent, and Customer — ensuring clear accountability at every level. Built on Spring Boot 4, Java 25, and PostgreSQL, with full Docker containerization, the system is scalable, portable, and production-ready.
 
 ---
 
