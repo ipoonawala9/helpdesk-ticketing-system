@@ -24,6 +24,7 @@ A RESTful backend API for managing support tickets across multiple organizations
   - [Tickets](#tickets-api)
 - [DTOs](#dtos)
 - [Exception Handling](#exception-handling)
+- [Testing](#testing)
 - [Configuration](#configuration)
 - [Running Locally](#running-locally)
 - [Running with Docker](#running-with-docker)
@@ -53,6 +54,10 @@ The HelpDesk Ticketing System is a multi-tenant support platform where:
 
 Ticket numbers are auto-generated in the format `HD-2026-XXXXXX` using the database-generated ID.
 
+Controllers never accept or return JPA entities. Every request is bound to a
+validated request record and every response is built by an explicit mapper, so
+passwords, Hibernate proxy fields and circular references cannot reach a client.
+
 ---
 
 ## Tech Stack
@@ -68,6 +73,7 @@ Ticket numbers are auto-generated in the format `HD-2026-XXXXXX` using the datab
 | API Docs | Postman |
 | Build tool | Maven (Maven Wrapper included) |
 | Containerization | Docker (eclipse-temurin:25-jdk) |
+| Testing | JUnit 5, Mockito, AssertJ, MockMvc, H2 (in-memory) |
 
 ---
 
@@ -80,36 +86,54 @@ helpdesk-ticketing-system/
 │   │   ├── java/com/ibrahim/helpdesk/
 │   │   │   ├── HelpDeskApplication.java          # Entry point
 │   │   │   ├── exception/
+│   │   │   │   ├── ApiErrorResponse.java         # single error shape
+│   │   │   │   ├── BusinessRuleException.java
 │   │   │   │   ├── GlobalExceptionHandler.java   # @RestControllerAdvice
 │   │   │   │   ├── OrganizationNotFoundException.java
 │   │   │   │   ├── TicketNotFoundException.java
 │   │   │   │   └── UserNotFoundException.java
 │   │   │   ├── organization/
 │   │   │   │   ├── controller/OrganizationController.java
+│   │   │   │   ├── dto/CreateOrganizationRequest.java
+│   │   │   │   ├── dto/OrganizationResponse.java
+│   │   │   │   ├── dto/OrganizationSummaryResponse.java
 │   │   │   │   ├── entity/Organization.java
+│   │   │   │   ├── mapper/OrganizationMapper.java
 │   │   │   │   ├── repository/OrganizationRepository.java
 │   │   │   │   └── service/OrganizationService.java
 │   │   │   ├── user/
 │   │   │   │   ├── controller/UserController.java
+│   │   │   │   ├── dto/CreateUserRequest.java
+│   │   │   │   ├── dto/UserResponse.java
+│   │   │   │   ├── dto/UserSummaryResponse.java
 │   │   │   │   ├── entity/User.java
 │   │   │   │   ├── entity/UserRole.java
+│   │   │   │   ├── mapper/UserMapper.java
 │   │   │   │   ├── repository/UserRepository.java
 │   │   │   │   └── service/UserService.java
 │   │   │   └── ticket/
 │   │   │       ├── controller/TicketController.java
 │   │   │       ├── dto/CreateTicketRequest.java
+│   │   │       ├── dto/TicketResponse.java
 │   │   │       ├── dto/UpdateTicketRequest.java
 │   │   │       ├── entity/Ticket.java
 │   │   │       ├── entity/TicketCategory.java
 │   │   │       ├── entity/TicketPriority.java
 │   │   │       ├── entity/TicketStatus.java
+│   │   │       ├── mapper/TicketMapper.java
 │   │   │       ├── repository/TicketRepository.java
 │   │   │       └── service/TicketService.java
 │   │   └── resources/
 │   │       └── application.properties
 │   └── test/
-│       └── java/com/ibrahim/helpdesk/
-│           └── HelpDeskApplicationTests.java
+│       ├── java/com/ibrahim/helpdesk/
+│       │   ├── HelpDeskApplicationTests.java
+│       │   ├── TicketApiIntegrationTest.java      # end-to-end, H2
+│       │   ├── ticket/controller/TicketControllerTest.java
+│       │   ├── ticket/service/TicketServiceTest.java
+│       │   └── user/service/UserServiceTest.java
+│       └── resources/
+│           └── application.properties             # in-memory H2
 ├── ss/                                            # Postman screenshots
 ├── Dockerfile
 ├── mvnw / mvnw.cmd
@@ -247,7 +271,9 @@ Request body:
 }
 ```
 
-Response `200 OK`:
+All four fields are required. `companyEmail` must be a valid email address.
+
+Response `201 Created`:
 ```json
 {
   "id": 1,
@@ -257,6 +283,16 @@ Response `200 OK`:
   "industry": "Technology"
 }
 ```
+
+---
+
+#### List Organizations
+
+```
+GET /api/organizations
+```
+
+Response `200 OK`: array of organization objects.
 
 ---
 
@@ -280,7 +316,11 @@ Response `200 OK`:
 Response `404 Not Found`:
 ```json
 {
-  "message": "Organization with id 99 not found"
+  "timestamp": "2026-06-18T15:00:00",
+  "status": 404,
+  "error": "Not Found",
+  "message": "Organization with id 99 not found",
+  "path": "/api/organizations/99"
 }
 ```
 
@@ -303,17 +343,18 @@ Request body:
   "password": "secret123",
   "phoneNumber": "+1234567890",
   "role": "CUSTOMER",
-  "active": true,
-  "organization": {
-    "id": 1
-  }
+  "organizationId": 1
 }
 ```
 
-- The `organization.id` is resolved from the database. If not found, returns `404`.
-- `password` is stored but never returned in any API response.
+- The request is bound to `CreateUserRequest`, not to the `User` entity, so `id`
+  and `active` cannot be set by the caller. New users are always created active.
+- `organizationId` is resolved from the database. If not found, returns `404`.
+- `organizationId` is required for every role except `SUPER_ADMIN`.
+- `password` is stored but is not a field on any response type, so it can never
+  be returned.
 
-Response `200 OK`:
+Response `201 Created`:
 ```json
 {
   "id": 1,
@@ -321,23 +362,36 @@ Response `200 OK`:
   "email": "john@acme.com",
   "phoneNumber": "+1234567890",
   "role": "CUSTOMER",
+  "active": true,
   "organization": {
     "id": 1,
-    "name": "Acme Corp",
-    "companyEmail": "contact@acme.com",
-    "domain": "acme.com",
-    "industry": "Technology"
-  },
-  "active": true
+    "name": "Acme Corp"
+  }
 }
 ```
 
 Response `404 Not Found` (if org not found):
 ```json
 {
-  "message": "Organization with id 99 not found"
+  "timestamp": "2026-06-18T15:00:00",
+  "status": 404,
+  "error": "Not Found",
+  "message": "Organization with id 99 not found",
+  "path": "/api/users"
 }
 ```
+
+---
+
+#### Get User by ID
+
+```
+GET /api/users/{id}
+```
+
+Response `200 OK`: single user object in the shape above.
+
+Response `404 Not Found` if the user does not exist.
 
 ---
 
@@ -369,7 +423,7 @@ Behavior on creation:
 - `createdAt` and `updatedAt` are set to current timestamp
 - Ticket is saved once to get the auto-generated ID, then `ticketNumber` is formatted as `HD-2026-XXXXXX` and saved again
 
-Response `200 OK`:
+Response `201 Created`:
 ```json
 {
   "id": 1,
@@ -379,9 +433,17 @@ Response `200 OK`:
   "status": "OPEN",
   "priority": null,
   "category": "ACCOUNT",
-  "customer": { "id": 1, "name": "John Doe", ... },
+  "customer": {
+    "id": 1,
+    "name": "John Doe",
+    "email": "john@acme.com",
+    "role": "CUSTOMER"
+  },
   "assignedAgent": null,
-  "organization": { "id": 1, "name": "Acme Corp", ... },
+  "organization": {
+    "id": 1,
+    "name": "Acme Corp"
+  },
   "reopenCount": 0,
   "createdAt": "2026-06-18T15:00:00",
   "updatedAt": "2026-06-18T15:00:00",
@@ -390,10 +452,18 @@ Response `200 OK`:
 }
 ```
 
+The customer, assigned agent and organization are flattened into summary
+objects. A ticket response never contains a password, a Hibernate proxy field
+such as `hibernateLazyInitializer`, or a path back to another ticket.
+
 Response `404 Not Found` (if customer not found):
 ```json
 {
-  "message": "User with ID 99 not found"
+  "timestamp": "2026-06-18T15:00:00",
+  "status": 404,
+  "error": "Not Found",
+  "message": "User with ID 99 not found",
+  "path": "/api/tickets"
 }
 ```
 
@@ -420,7 +490,11 @@ Response `200 OK`: Single ticket object.
 Response `404 Not Found`:
 ```json
 {
-  "message": "Ticket with ID 99 not found"
+  "timestamp": "2026-06-18T15:00:00",
+  "status": 404,
+  "error": "Not Found",
+  "message": "Ticket with ID 99 not found",
+  "path": "/api/tickets/99"
 }
 ```
 
@@ -445,14 +519,13 @@ Request body:
 - Updates `title`, `description`, `category`
 - Automatically updates `updatedAt` to current timestamp
 
+Only these three fields can be changed. Status, priority, assignment,
+organization, ticket number, reopen count and the resolution and closure
+timestamps are server-controlled and are not editable through this endpoint.
+
 Response `200 OK`: Updated ticket object.
 
-Response `404 Not Found`:
-```json
-{
-  "message": "Ticket with ID 99 not found"
-}
-```
+Response `404 Not Found`: standard error body.
 
 ---
 
@@ -462,49 +535,140 @@ Response `404 Not Found`:
 DELETE /api/tickets/{id}
 ```
 
-Response `200 OK`: No body.
+Response `204 No Content`: no body.
 
-Response `404 Not Found`:
-```json
-{
-  "message": "Ticket with ID 99 not found"
-}
-```
+Response `404 Not Found`: standard error body.
 
 ---
 
 ## DTOs
 
-### CreateTicketRequest
+No JPA entity is ever bound to a request body or returned from a controller.
+Requests are bound to request records, responses are built from entities by
+hand-written mappers (`OrganizationMapper`, `UserMapper`, `TicketMapper`), so
+adding a field to an entity can never silently widen an API response.
 
-| Field | Type | Description |
+### Request DTOs
+
+#### CreateOrganizationRequest
+
+| Field | Type | Constraints |
 |---|---|---|
-| `title` | String | Ticket title |
-| `description` | String | Ticket description |
-| `category` | TicketCategory | Category enum value |
-| `customerId` | Long | ID of the customer raising the ticket |
+| `name` | String | required, max 150 |
+| `companyEmail` | String | required, valid email, max 200 |
+| `domain` | String | required, max 150 |
+| `industry` | String | required, max 100 |
 
-### UpdateTicketRequest
+#### CreateUserRequest
 
-| Field | Type | Description |
+| Field | Type | Constraints |
 |---|---|---|
-| `title` | String | Updated title |
-| `description` | String | Updated description |
-| `category` | TicketCategory | Updated category |
+| `name` | String | required, max 150 |
+| `email` | String | required, valid email, max 200 |
+| `password` | String | required, 8 to 100 characters |
+| `phoneNumber` | String | optional, 7 to 20 characters |
+| `role` | UserRole | required |
+| `organizationId` | Long | required for every role except `SUPER_ADMIN` |
+
+#### CreateTicketRequest
+
+| Field | Type | Constraints |
+|---|---|---|
+| `title` | String | required, max 200 |
+| `description` | String | required, max 5000 |
+| `category` | TicketCategory | required |
+| `customerId` | Long | required |
+
+#### UpdateTicketRequest
+
+| Field | Type | Constraints |
+|---|---|---|
+| `title` | String | required, max 200 |
+| `description` | String | required, max 5000 |
+| `category` | TicketCategory | required |
+
+### Response DTOs
+
+| DTO | Contents |
+|---|---|
+| `OrganizationResponse` | `id`, `name`, `companyEmail`, `domain`, `industry` |
+| `OrganizationSummaryResponse` | `id`, `name` — used when nested in another response |
+| `UserResponse` | `id`, `name`, `email`, `phoneNumber`, `role`, `active`, `organization` |
+| `UserSummaryResponse` | `id`, `name`, `email`, `role` — used when nested in another response |
+| `TicketResponse` | all ticket fields, with `customer`, `assignedAgent` and `organization` as summaries |
+
+`password` is not a component of any response record, so it cannot be
+serialised even by accident.
 
 ---
 
 ## Exception Handling
 
-All exceptions are handled globally by `GlobalExceptionHandler` (`@RestControllerAdvice`).
+All exceptions are handled globally by `GlobalExceptionHandler`
+(`@RestControllerAdvice`). Every failure returns the same `ApiErrorResponse`
+shape, so a client only ever has to parse one structure:
 
-| Exception | HTTP Status | Response Body |
+```json
+{
+  "timestamp": "2026-06-18T15:00:00",
+  "status": 404,
+  "error": "Not Found",
+  "message": "Ticket with ID 99 not found",
+  "path": "/api/tickets/99"
+}
+```
+
+| Exception | HTTP Status | Message |
 |---|---|---|
-| `OrganizationNotFoundException` | `404 Not Found` | `{"message": "Organization with id X not found"}` |
-| `UserNotFoundException` | `404 Not Found` | `{"message": "User with ID X not found"}` |
-| `TicketNotFoundException` | `404 Not Found` | `{"message": "Ticket with ID X not found"}` |
+| `OrganizationNotFoundException` | `404 Not Found` | `Organization with id X not found` |
+| `UserNotFoundException` | `404 Not Found` | `User with ID X not found` |
+| `TicketNotFoundException` | `404 Not Found` | `Ticket with ID X not found` |
+| `BusinessRuleException` | `400 Bad Request` | the rule that was violated |
+| `MethodArgumentNotValidException` | `400 Bad Request` | `Validation failed`, plus `fieldErrors` |
+| `HttpMessageNotReadableException` | `400 Bad Request` | `Malformed or unreadable request body` |
+| `MethodArgumentTypeMismatchException` | `400 Bad Request` | `Invalid value for parameter 'x'` |
+| any other `Exception` | `500 Internal Server Error` | `An unexpected error occurred` |
 
-All three exception classes extend `RuntimeException` and pass a descriptive message to the parent constructor.
+### Validation errors
+
+Bean Validation failures report every rejected field at once, in an extra
+`fieldErrors` object. That key is absent from all other error responses.
+
+```json
+{
+  "timestamp": "2026-06-18T15:00:00",
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Validation failed",
+  "path": "/api/tickets",
+  "fieldErrors": {
+    "title": "Title is required",
+    "category": "Category is required"
+  }
+}
+```
+
+An unknown enum constant, such as a category of `BANANA`, is reported as a
+`400` rather than surfacing as a `500`. The underlying Jackson message is not
+echoed back because it exposes internal type names.
+
+---
+
+## Testing
+
+The suite runs against in-memory H2 in PostgreSQL compatibility mode, so it
+needs neither a live database nor any environment variables:
+
+```bash
+./mvnw test
+```
+
+| Test | Kind | Covers |
+|---|---|---|
+| `TicketServiceTest` | unit (Mockito) | organization derived from the customer, server-controlled fields on create, ticket number generation, update touching only title/description/category |
+| `UserServiceTest` | unit (Mockito) | organization resolution, `SUPER_ADMIN` without an organization, rejection of an organization-scoped role with no organization, no password on the response record |
+| `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals |
+| `TicketApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full organization to user to ticket flow through the real web, service and persistence layers, asserting no `password` or `hibernateLazyInitializer` anywhere in the payload |
 
 ---
 
@@ -523,6 +687,7 @@ spring.datasource.password=${DB_PASSWORD}
 spring.jpa.hibernate.ddl-auto=update
 spring.jpa.show-sql=false
 spring.jpa.properties.hibernate.format_sql=true
+spring.jpa.open-in-view=false
 ```
 
 All sensitive values are driven by environment variables:
@@ -535,6 +700,10 @@ All sensitive values are driven by environment variables:
 | `DB_PASSWORD` | PostgreSQL password |
 
 `ddl-auto=update` means Hibernate will automatically create or alter tables to match the entity definitions on startup.
+
+`open-in-view=false` is safe here because every entity-to-DTO mapping happens
+inside a transactional service method, so no lazy association is ever touched
+during view rendering.
 
 ---
 
@@ -660,7 +829,12 @@ Creates a new organization by sending a POST request to `/api/organizations` wit
 
 ![Create User](ss/WhatsApp%20Image%202026-06-18%20at%204.04.44%20PM.jpeg)
 
-Creates a new user by sending a POST request to `/api/users`. The `organization.id` in the body links the user to an existing organization. The response returns the full user object — note that `password` is not included in the response due to `@JsonIgnore`.
+Creates a new user by sending a POST request to `/api/users`. The `organizationId` in the body links the user to an existing organization. The response returns a `UserResponse`, which has no password field at all.
+
+> These screenshots were captured before the API hardening change. Create
+> endpoints now return `201 Created`, delete returns `204 No Content`, the user
+> request body takes `organizationId` instead of a nested `organization` object,
+> and nested users and organizations are returned as summaries.
 
 ---
 
