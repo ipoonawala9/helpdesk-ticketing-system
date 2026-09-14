@@ -10,6 +10,8 @@ import com.ibrahim.helpdesk.ticket.entity.Ticket;
 import com.ibrahim.helpdesk.ticket.entity.TicketCategory;
 import com.ibrahim.helpdesk.ticket.entity.TicketPriority;
 import com.ibrahim.helpdesk.ticket.entity.TicketStatus;
+import com.ibrahim.helpdesk.ticket.priority.PriorityInput;
+import com.ibrahim.helpdesk.ticket.priority.TicketPriorityPolicy;
 import com.ibrahim.helpdesk.ticket.repository.TicketRepository;
 import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.entity.UserRole;
@@ -40,6 +42,9 @@ class TicketServiceTest {
 
     @Mock
     private UserService userService;
+
+    @Mock
+    private TicketPriorityPolicy priorityPolicy;
 
     @InjectMocks
     private TicketService ticketService;
@@ -81,12 +86,16 @@ class TicketServiceTest {
     @DisplayName("createTicket derives organization from the customer and sets all server-controlled fields")
     void createTicketSetsServerControlledFields() {
         when(userService.findOrThrow(1L)).thenReturn(customer);
+        when(priorityPolicy.determine(any(PriorityInput.class))).thenReturn(TicketPriority.HIGH);
         stubSaveAssigningId(42L);
 
         TicketResponse response = ticketService.createTicket(new CreateTicketRequest(
                 "Printer will not print", "It jams on every job", TicketCategory.HARDWARE, 1L));
 
         assertThat(response.status()).isEqualTo(TicketStatus.OPEN);
+        assertThat(response.priority()).isEqualTo(TicketPriority.HIGH);
+        verify(priorityPolicy).determine(new PriorityInput(
+                TicketCategory.HARDWARE, "Printer will not print", "It jams on every job", 0));
         assertThat(response.assignedAgent()).isNull();
         assertThat(response.reopenCount()).isZero();
         assertThat(response.resolvedAt()).isNull();
@@ -122,7 +131,7 @@ class TicketServiceTest {
     }
 
     @Test
-    @DisplayName("updateTicket changes only title, description and category")
+    @DisplayName("updateTicket changes title, description and category, recalculates priority, and leaves workflow fields alone")
     void updateTicketLeavesWorkflowFieldsAlone() {
         Ticket existing = new Ticket();
         existing.setId(5L);
@@ -138,6 +147,7 @@ class TicketServiceTest {
         existing.setCreatedAt(LocalDateTime.now().minusDays(3));
 
         when(ticketRepository.findById(5L)).thenReturn(Optional.of(existing));
+        when(priorityPolicy.determine(any(PriorityInput.class))).thenReturn(TicketPriority.MEDIUM);
         stubSaveAssigningId(5L);
 
         TicketResponse response = ticketService.updateTicket(5L, new UpdateTicketRequest(
@@ -148,9 +158,13 @@ class TicketServiceTest {
         assertThat(response.category()).isEqualTo(TicketCategory.SOFTWARE);
 
         assertThat(response.status()).isEqualTo(TicketStatus.IN_PROGRESS);
-        assertThat(response.priority()).isEqualTo(TicketPriority.HIGH);
         assertThat(response.reopenCount()).isEqualTo(2);
         assertThat(response.ticketNumber()).isEqualTo("HD-2026-000005");
+
+        // Priority is recalculated from the edited content and the existing reopen count.
+        assertThat(response.priority()).isEqualTo(TicketPriority.MEDIUM);
+        verify(priorityPolicy).determine(new PriorityInput(
+                TicketCategory.SOFTWARE, "New title", "New description", 2));
     }
 
     @Test

@@ -8,6 +8,8 @@ import com.ibrahim.helpdesk.ticket.dto.UpdateTicketRequest;
 import com.ibrahim.helpdesk.ticket.entity.Ticket;
 import com.ibrahim.helpdesk.ticket.entity.TicketStatus;
 import com.ibrahim.helpdesk.ticket.mapper.TicketMapper;
+import com.ibrahim.helpdesk.ticket.priority.PriorityInput;
+import com.ibrahim.helpdesk.ticket.priority.TicketPriorityPolicy;
 import com.ibrahim.helpdesk.ticket.repository.TicketRepository;
 import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.service.UserService;
@@ -24,11 +26,12 @@ public class TicketService {
 
     private final TicketRepository ticketRepository;
     private final UserService userService;
+    private final TicketPriorityPolicy priorityPolicy;
 
     /**
      * Opens a ticket on behalf of a customer. Organization is derived from the
-     * customer and never read from the request; status, agent, reopen count and
-     * timestamps are all set here.
+     * customer and never read from the request; status, priority, agent, reopen
+     * count and timestamps are all set here.
      */
     @Transactional
     public TicketResponse createTicket(CreateTicketRequest request) {
@@ -48,6 +51,7 @@ public class TicketService {
         ticket.setStatus(TicketStatus.OPEN);
         ticket.setAssignedAgent(null);
         ticket.setReopenCount(0);
+        ticket.setPriority(priorityPolicy.determine(priorityInputFor(ticket)));
 
         LocalDateTime now = LocalDateTime.now();
         ticket.setCreatedAt(now);
@@ -78,9 +82,10 @@ public class TicketService {
     }
 
     /**
-     * Applies the only edits a customer is permitted to make. Status, priority,
-     * assignment, organization and every timestamp except updatedAt are
-     * untouched by design.
+     * Applies the only edits a customer is permitted to make. Priority is then
+     * recalculated from the new content, because it is derived from exactly
+     * these fields. Status, assignment, organization and every timestamp except
+     * updatedAt are untouched by design.
      */
     @Transactional
     public TicketResponse updateTicket(Long id, UpdateTicketRequest request) {
@@ -90,6 +95,7 @@ public class TicketService {
         ticket.setTitle(request.title());
         ticket.setDescription(request.description());
         ticket.setCategory(request.category());
+        ticket.setPriority(priorityPolicy.determine(priorityInputFor(ticket)));
         ticket.setUpdatedAt(LocalDateTime.now());
 
         return TicketMapper.toResponse(ticketRepository.save(ticket));
@@ -98,6 +104,30 @@ public class TicketService {
     @Transactional
     public void deleteTicket(Long id) {
         ticketRepository.delete(findOrThrow(id));
+    }
+
+    /**
+     * Calculates priority for tickets that have none, which are tickets created
+     * before priority was automatic. Tickets that already have a priority are
+     * left alone, so running this repeatedly changes nothing.
+     *
+     * @return how many tickets were given a priority
+     */
+    @Transactional
+    public int backfillMissingPriorities() {
+        List<Ticket> tickets = ticketRepository.findByPriorityIsNull();
+        tickets.forEach(ticket -> ticket.setPriority(priorityPolicy.determine(priorityInputFor(ticket))));
+        ticketRepository.saveAll(tickets);
+        return tickets.size();
+    }
+
+    /** The inputs the priority policy sees for a ticket in its current state. */
+    public static PriorityInput priorityInputFor(Ticket ticket) {
+        return new PriorityInput(
+                ticket.getCategory(),
+                ticket.getTitle(),
+                ticket.getDescription(),
+                ticket.getReopenCount() == null ? 0 : ticket.getReopenCount());
     }
 
     @Transactional(readOnly = true)

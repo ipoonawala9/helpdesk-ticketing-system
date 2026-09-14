@@ -14,7 +14,9 @@ import com.ibrahim.helpdesk.ticket.dto.ReopenTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.entity.Ticket;
 import com.ibrahim.helpdesk.ticket.entity.TicketCategory;
+import com.ibrahim.helpdesk.ticket.entity.TicketPriority;
 import com.ibrahim.helpdesk.ticket.entity.TicketStatus;
+import com.ibrahim.helpdesk.ticket.priority.RuleBasedTicketPriorityPolicy;
 import com.ibrahim.helpdesk.ticket.repository.TicketRepository;
 import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.entity.UserRole;
@@ -78,7 +80,9 @@ class TicketWorkflowServiceTest {
         Clock fixedClock = Clock.fixed(NOW.atZone(zone).toInstant(), zone);
         workflowService = new TicketWorkflowService(
                 ticketService, userService, ticketRepository, fixedClock,
-                new TicketWorkflowProperties(ADMIN_CLOSE_AFTER, REOPEN_WINDOW));
+                new TicketWorkflowProperties(ADMIN_CLOSE_AFTER, REOPEN_WINDOW),
+                // The real policy: it is a pure function, so there is nothing to isolate.
+                new RuleBasedTicketPriorityPolicy());
 
         acme = organization(7L, "Acme Ltd");
         globex = organization(8L, "Globex Corp");
@@ -680,6 +684,8 @@ class TicketWorkflowServiceTest {
 
             assertThat(response.status()).isEqualTo(TicketStatus.REOPENED);
             assertThat(response.reopenCount()).isEqualTo(1);
+            // A MEDIUM hardware ticket escalates one level on its first reopen.
+            assertThat(response.priority()).isEqualTo(TicketPriority.HIGH);
             assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
             assertThat(response.resolvedAt()).isNull();
             assertThat(response.closedAt()).isNull();
@@ -695,6 +701,24 @@ class TicketWorkflowServiceTest {
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
             assertThat(workflowService.reopenTicket(TICKET_ID, byCustomer).reopenCount()).isEqualTo(3);
+        }
+
+        @Test
+        @DisplayName("reopening recalculates priority from the ticket's content and new reopen count")
+        void reopenRecalculatesPriority() {
+            givenResolvedTicket(NOW.minusMinutes(30));
+            ticket.setCategory(TicketCategory.OTHER);
+            ticket.setTitle("Question about fonts");
+            ticket.setDescription("How do I change the default font?");
+            ticket.setPriority(TicketPriority.LOW);
+            ticket.setReopenCount(1);
+            when(userService.findOrThrow(CUSTOMER_ID)).thenReturn(customer);
+            when(ticketRepository.save(ticket)).thenReturn(ticket);
+
+            TicketResponse response = workflowService.reopenTicket(TICKET_ID, byCustomer);
+
+            assertThat(response.reopenCount()).isEqualTo(2);
+            assertThat(response.priority()).isEqualTo(TicketPriority.HIGH);
         }
 
         @Test

@@ -19,6 +19,7 @@ A RESTful backend API for managing support tickets across multiple organizations
   - [Ticket](#ticket)
   - [Message](#message)
 - [Enums](#enums)
+- [Automatic Priority](#automatic-priority)
 - [API Reference](#api-reference)
   - [Organizations](#organizations-api)
   - [Users](#users-api)
@@ -59,6 +60,9 @@ Ticket numbers are auto-generated in the format `HD-2026-XXXXXX` using the datab
 Controllers never accept or return JPA entities. Every request is bound to a
 validated request record and every response is built by an explicit mapper, so
 passwords, Hibernate proxy fields and circular references cannot reach a client.
+
+Ticket priority is always decided by the server from the ticket's category,
+wording and reopen count; clients cannot set it.
 
 Each ticket carries its own conversation. The customer and the assigned agent
 exchange messages on the ticket, and administrators of the ticket's
@@ -157,6 +161,10 @@ helpdesk-ticketing-system/
 │   │   │       ├── entity/TicketPriority.java
 │   │   │       ├── entity/TicketStatus.java
 │   │   │       ├── mapper/TicketMapper.java
+│   │   │       ├── priority/PriorityInput.java
+│   │   │       ├── priority/RuleBasedTicketPriorityPolicy.java  # the rules
+│   │   │       ├── priority/TicketPriorityBackfill.java         # fills missing priorities on startup
+│   │   │       ├── priority/TicketPriorityPolicy.java           # replaceable interface
 │   │   │       ├── repository/TicketRepository.java
 │   │   │       ├── service/TicketParticipants.java     # who is customer / agent / admin of a ticket
 │   │   │       ├── service/TicketService.java          # CRUD
@@ -175,9 +183,11 @@ helpdesk-ticketing-system/
 │       │   ├── TicketAgentWorkflowIntegrationTest.java
 │       │   ├── TicketAssignmentIntegrationTest.java
 │       │   ├── TicketMessagingIntegrationTest.java
+│       │   ├── TicketPriorityIntegrationTest.java
 │       │   ├── TicketReopenCloseIntegrationTest.java
 │       │   ├── ticket/config/TicketWorkflowPropertiesTest.java
 │       │   ├── ticket/controller/TicketControllerTest.java
+│       │   ├── ticket/priority/RuleBasedTicketPriorityPolicyTest.java
 │       │   ├── ticket/service/TicketServiceTest.java
 │       │   ├── ticket/service/TicketWorkflowServiceTest.java
 │       │   └── user/service/UserServiceTest.java
@@ -235,7 +245,7 @@ Table: `tickets`
 | `title` | String | Short summary of the issue |
 | `description` | String | Detailed description of the issue |
 | `status` | TicketStatus (enum) | Current lifecycle state |
-| `priority` | TicketPriority (enum) | Urgency level |
+| `priority` | TicketPriority (enum) | Urgency level, always calculated by the server (see [Automatic Priority](#automatic-priority)) |
 | `category` | TicketCategory (enum) | Type of issue |
 | `customer` | User | `@ManyToOne` — the user who raised the ticket |
 | `assignedAgent` | User | `@ManyToOne` — the support agent handling it |
@@ -303,6 +313,57 @@ NETWORK
 SECURITY
 OTHER
 ```
+
+---
+
+## Automatic Priority
+
+Clients never set priority. Any `priority` field in a request body is ignored.
+The server calculates it whenever the inputs can change:
+
+| When | Why |
+|---|---|
+| A ticket is created | first assessment |
+| The customer edits title, description or category | priority is derived from exactly those fields, so it can go up or down |
+| The customer reopens the ticket | the reopen count feeds into priority |
+| The application starts | any ticket without a priority, i.e. one created before this feature, gets one; existing priorities are not touched |
+
+Priority is a pure function of **category, title, description and reopen
+count**, so the same ticket always gets the same priority.
+
+### Rules
+
+Applied in order. Title and description are matched case-insensitively on
+whole words and phrases.
+
+| # | Rule | Result |
+|---|---|---|
+| 1 | An **incident signal** appears: `breach`, `breached`, `data breach`, `hacked`, `ransomware`, `compromised`, `data loss`, `lost all data`, `outage`, `production down`, `system down`, `server down`, `site down`, `service down` | `CRITICAL`, and no further rules apply |
+| 2 | **Category baseline**: `SECURITY` is `HIGH`; `OTHER` is `LOW`; `HARDWARE`, `SOFTWARE`, `BILLING`, `ACCOUNT`, `NETWORK` are `MEDIUM` | baseline |
+| 3 | An **urgency signal** appears: `urgent`, `asap`, `emergency`, `blocked`, `cannot log in`, `can't log in`, `cannot login`, `can't login`, `unable to log in`, `unable to login`, `locked out`, `crash`, `crashes`, `crashed`, `crashing`, `malware`, `virus`, `phishing`, `payment failed`, `charged twice`, `double charged`, `overcharged`, `all users`, `everyone`, `entire team`, `whole team` | at least `HIGH` |
+| 4 | Otherwise, a **low-urgency signal** appears: `question`, `how do i`, `how to`, `feature request`, `suggestion`, `whenever you can`, `when you have time`, `not urgent`, `non-urgent`, `no rush`, `not an emergency`, `low priority` | `LOW`, except `SECURITY` tickets, which stay `HIGH` |
+| 5 | The ticket has been **reopened** | one level higher per reopen, but reopening alone never goes above `HIGH` |
+
+Examples:
+
+| Category | Wording | Reopens | Priority |
+|---|---|---|---|
+| `OTHER` | "How do I change the default font?" | 0 | `LOW` |
+| `HARDWARE` | "The screen flickers now and then" | 0 | `MEDIUM` |
+| `ACCOUNT` | "I can't log in since this morning" | 0 | `HIGH` |
+| `NETWORK` | "Office outage, nobody can reach the internet" | 0 | `CRITICAL` |
+| `SECURITY` | "Question about enabling 2FA, no rush" | 0 | `HIGH` |
+| `OTHER` | "How do I change the default font?" | 2 | `HIGH` |
+
+Design notes:
+- **`CRITICAL` means an incident.** Only incident wording produces it. A ticket
+  that keeps being reopened becomes `HIGH`, not `CRITICAL`.
+- **Calm phrases are removed before urgency matching**, so "not urgent" does
+  not count as "urgent". Beyond those listed phrases the rules do not
+  understand negation: "not blocked" still counts as "blocked".
+- **Replaceable.** The rules live in `RuleBasedTicketPriorityPolicy`, behind
+  the `TicketPriorityPolicy` interface. A different implementation registered
+  as the primary bean replaces them without touching any other code.
 
 ---
 
@@ -1085,11 +1146,13 @@ needs neither a live database nor any environment variables:
 | `FrameworkErrorMappingTest` | web slice (`@WebMvcTest`) | unknown URL, unsupported method and unsupported content type keep their real `404`/`405`/`415` status in the standard error shape, without leaking class names |
 | `MessageServiceTest` | unit (Mockito) | posting by customer and assigned agent, trimming, posting on an unassigned ticket, posting allowed in every status except `CLOSED`; admin, unassigned agent, other customer and inactive users refused; reading by customer, agent and admin, refusal of unrelated and cross-organization users, closed threads readable, deleted senders mapped to `null` |
 | `MessageControllerTest` | web slice (`@WebMvcTest`) | `201` and `200` responses, validation of sender and content, missing `userId` as `400`, `403` and `409` mapping |
+| `RuleBasedTicketPriorityPolicyTest` | unit | every category baseline; every incident, urgency, low-urgency and calm phrase in the lists; precedence between them; whole-word, case-insensitive and typographic-apostrophe matching; the documented negation limitation; reopen escalation and its `HIGH` ceiling; determinism and null safety |
 | `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assign, start, resolve, close and reopen mapped to `200`/`400`/`403`/`409` |
 | `TicketApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full organization to user to ticket flow through the real web, service and persistence layers, asserting no `password` or `hibernateLazyInitializer` anywhere in the payload |
 | `TicketAssignmentIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | assignment persisted and readable back, reassignment, and that cross-organization agents, cross-organization admins, non-admin actors, non-agent targets and unknown ids are rejected with the stored ticket left `OPEN` and unassigned |
 | `TicketAgentWorkflowIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full `OPEN` → `ASSIGNED` → `IN_PROGRESS` → `RESOLVED` lifecycle persisted; resolve-before-start, double start and double resolve refused; other agents and the admin forbidden; reassignment transferring ownership, including of in-progress work; no reassignment once resolved |
 | `TicketMessagingIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | a customer–agent conversation read back in order by all three allowed readers; admin read-only; outsiders refused; access moving with reassignment; closed ticket frozen until reopened; trimming and validation; deleting a ticket deleting its messages; and a query-count check that reading a thread does not run a query per sender (Hibernate statistics) |
+| `TicketPriorityIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | priority set on create for each level; a client-supplied `priority` ignored; recalculation on edit in both directions; escalation over three reopens capped at `HIGH`; startup backfill filling only missing priorities |
 | `TicketReopenCloseIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | close, reopen, re-resolve and close again with `reopenCount` persisted; admin close refused before 3 hours and allowed after; reopen refused after 7 days; reassignment of a reopened ticket; other customers, the agent and a cross-organization admin forbidden. Time windows are tested by advancing a `MutableClock` rather than waiting |
 
 ---

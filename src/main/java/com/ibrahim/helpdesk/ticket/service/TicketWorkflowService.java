@@ -13,6 +13,7 @@ import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.entity.Ticket;
 import com.ibrahim.helpdesk.ticket.entity.TicketStatus;
 import com.ibrahim.helpdesk.ticket.mapper.TicketMapper;
+import com.ibrahim.helpdesk.ticket.priority.TicketPriorityPolicy;
 import com.ibrahim.helpdesk.ticket.repository.TicketRepository;
 import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.entity.UserRole;
@@ -67,6 +68,7 @@ public class TicketWorkflowService {
     private final TicketRepository ticketRepository;
     private final Clock clock;
     private final TicketWorkflowProperties properties;
+    private final TicketPriorityPolicy priorityPolicy;
 
     @Transactional
     public TicketResponse assignTicket(Long ticketId, AssignTicketRequest request) {
@@ -141,7 +143,8 @@ public class TicketWorkflowService {
      *
      * <p>The assigned agent is kept so they can resume straight away; an
      * administrator can still reassign the reopened ticket. resolvedAt and
-     * closedAt are cleared because the ticket is now neither.
+     * closedAt are cleared because the ticket is now neither. Priority is
+     * recalculated, since the reopen count feeds into it.
      */
     @Transactional
     public TicketResponse reopenTicket(Long ticketId, ReopenTicketRequest request) {
@@ -166,6 +169,7 @@ public class TicketWorkflowService {
         int previousReopens = ticket.getReopenCount() == null ? 0 : ticket.getReopenCount();
         ticket.setStatus(TicketStatus.REOPENED);
         ticket.setReopenCount(previousReopens + 1);
+        ticket.setPriority(priorityPolicy.determine(TicketService.priorityInputFor(ticket)));
         ticket.setResolvedAt(null);
         ticket.setClosedAt(null);
         ticket.setUpdatedAt(now);
