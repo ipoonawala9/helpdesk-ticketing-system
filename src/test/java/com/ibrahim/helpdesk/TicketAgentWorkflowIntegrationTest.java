@@ -141,17 +141,37 @@ class TicketAgentWorkflowIntegrationTest extends ApiIntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("once work has started the ticket can no longer be reassigned")
-    void inProgressTicketCannotBeReassigned() throws Exception {
+    @DisplayName("an in-progress ticket can be reassigned; it restarts from ASSIGNED and only the new agent owns it")
+    void inProgressTicketCanBeReassigned() throws Exception {
         long secondAgentId = createUser("Pat Agent", "SUPPORT_AGENT", acmeId);
         assign(ticketId, agentId, adminId).andExpect(status().isOk());
         startWork(ticketId, agentId).andExpect(status().isOk());
 
         assign(ticketId, secondAgentId, adminId)
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("Cannot assign a ticket with status IN_PROGRESS"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ASSIGNED"))
+                .andExpect(jsonPath("$.assignedAgent.id").value((int) secondAgentId));
 
-        assertThat(JsonPath.<Integer>read(fetchTicket(ticketId), "$.assignedAgent.id")).isEqualTo((int) agentId);
+        resolve(ticketId, agentId).andExpect(status().isForbidden());
+        resolve(ticketId, secondAgentId)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Cannot resolve a ticket with status ASSIGNED"));
+
+        startWork(ticketId, secondAgentId).andExpect(status().isOk());
+        resolve(ticketId, secondAgentId).andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("resolved and closed tickets still cannot be reassigned")
+    void resolvedTicketCannotBeReassigned() throws Exception {
+        long secondAgentId = createUser("Pat Agent", "SUPPORT_AGENT", acmeId);
+        assign(ticketId, agentId, adminId).andExpect(status().isOk());
+        startWork(ticketId, agentId).andExpect(status().isOk());
+        resolve(ticketId, agentId).andExpect(status().isOk());
+
+        assign(ticketId, secondAgentId, adminId)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Cannot assign a ticket with status RESOLVED"));
     }
 
     @Test

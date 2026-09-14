@@ -35,7 +35,8 @@ import java.util.Set;
  * directly.
  *
  * <pre>
- * assign   OPEN, ASSIGNED, REOPENED  -> ASSIGNED     org admin
+ * assign   OPEN, ASSIGNED,
+ *          IN_PROGRESS, REOPENED     -> ASSIGNED     org admin
  * start    ASSIGNED, REOPENED        -> IN_PROGRESS  assigned agent
  * resolve  IN_PROGRESS               -> RESOLVED     assigned agent
  * close    RESOLVED                  -> CLOSED       customer, or org admin after a grace period
@@ -47,12 +48,12 @@ import java.util.Set;
 public class TicketWorkflowService {
 
     /**
-     * OPEN is a first assignment, ASSIGNED a reassignment before work starts,
-     * and REOPENED lets the admin hand a reopened ticket to a different agent.
-     * Tickets that are being worked on, resolved or closed cannot be assigned.
+     * OPEN is a first assignment. ASSIGNED, IN_PROGRESS and REOPENED are
+     * reassignments, so a ticket is never stranded with an agent who has left
+     * or been deactivated. Resolved and closed tickets cannot be assigned.
      */
-    private static final Set<TicketStatus> ASSIGNABLE_STATUSES =
-            EnumSet.of(TicketStatus.OPEN, TicketStatus.ASSIGNED, TicketStatus.REOPENED);
+    private static final Set<TicketStatus> ASSIGNABLE_STATUSES = EnumSet.of(
+            TicketStatus.OPEN, TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.REOPENED);
 
     /** A reopened ticket stays with its agent, who can pick it straight back up. */
     private static final Set<TicketStatus> STARTABLE_STATUSES =
@@ -83,12 +84,14 @@ public class TicketWorkflowService {
         requireAssignableAgent(agent, ticket.getOrganization());
 
         // Re-assigning to the agent who already holds the ticket is a no-op, so
-        // retries do not bump updatedAt.
+        // retries do not bump updatedAt or send in-progress work back a step.
         if (ticket.getAssignedAgent() != null
                 && Objects.equals(ticket.getAssignedAgent().getId(), agent.getId())) {
             return TicketMapper.toResponse(ticket);
         }
 
+        // A new agent always starts from ASSIGNED, even if the previous agent
+        // had already begun work.
         ticket.setAssignedAgent(agent);
         ticket.setStatus(TicketStatus.ASSIGNED);
         ticket.setUpdatedAt(now());

@@ -63,19 +63,14 @@ named business action in `TicketWorkflowService` with its own rules:
 
 | Action | Actor | Transition |
 |---|---|---|
-| Assign | `ORG_ADMIN` of the ticket's organization | `OPEN` / `ASSIGNED` / `REOPENED` → `ASSIGNED` |
+| Assign | `ORG_ADMIN` of the ticket's organization | `OPEN` / `ASSIGNED` / `IN_PROGRESS` / `REOPENED` → `ASSIGNED` |
 | Start work | the ticket's assigned `SUPPORT_AGENT` | `ASSIGNED` / `REOPENED` → `IN_PROGRESS` |
 | Resolve | the ticket's assigned `SUPPORT_AGENT` | `IN_PROGRESS` → `RESOLVED` (sets `resolvedAt`) |
 | Close | the ticket's `CUSTOMER` at any time, or its `ORG_ADMIN` 3 hours after resolution | `RESOLVED` → `CLOSED` (sets `closedAt`) |
 | Reopen | the ticket's `CUSTOMER` | `RESOLVED`, or `CLOSED` within 7 days → `REOPENED` |
 
-```
-OPEN → ASSIGNED → IN_PROGRESS → RESOLVED → CLOSED
-          ▲             ▲           │         │
-          │             │           ▼         │
-          └── assign ── REOPENED ◀── reopen ──┘
-                (start resumes with the same agent)
-```
+The happy path is `OPEN` → `ASSIGNED` → `IN_PROGRESS` → `RESOLVED` → `CLOSED`.
+A reopened ticket goes back to its agent, who starts work on it again.
 
 ---
 
@@ -596,7 +591,7 @@ Rules, checked in this order:
 | 1 | Ticket exists | `404 Not Found` |
 | 2 | Admin exists | `404 Not Found` |
 | 3 | Admin has role `ORG_ADMIN`, is active, and belongs to the ticket's organization | `403 Forbidden` |
-| 4 | Ticket status is `OPEN`, `ASSIGNED` or `REOPENED` | `409 Conflict` |
+| 4 | Ticket status is `OPEN`, `ASSIGNED`, `IN_PROGRESS` or `REOPENED` | `409 Conflict` |
 | 5 | Agent exists | `404 Not Found` |
 | 6 | Agent has role `SUPPORT_AGENT`, is active, and belongs to the ticket's organization | `400 Bad Request` |
 
@@ -604,13 +599,15 @@ The admin is authorised before the agent is looked up, so a caller without
 permission learns nothing about other users.
 
 **Reassignment:**
-- An `ASSIGNED` ticket can be reassigned to a different agent before work
-  starts.
-- A `REOPENED` ticket keeps its agent, but an admin can hand it to a
-  different one; it becomes `ASSIGNED`.
+- `ASSIGNED`, `IN_PROGRESS` and `REOPENED` tickets can be handed to a
+  different agent. The ticket goes back to `ASSIGNED` and the new agent starts
+  work on it, so a ticket is never stuck with an agent who has left or been
+  deactivated.
+- A `REOPENED` ticket keeps its agent unless an admin reassigns it.
 - Assigning the agent who already holds the ticket is an idempotent no-op and
-  changes nothing, including `updatedAt` and status.
-- `IN_PROGRESS`, `RESOLVED` and `CLOSED` tickets cannot be assigned.
+  changes nothing, including `updatedAt` and status, so an in-progress ticket
+  is not sent back a step.
+- `RESOLVED` and `CLOSED` tickets cannot be assigned.
 
 Response `200 OK`: the updated ticket.
 
@@ -687,7 +684,7 @@ Notes:
   a `RESOLVED` one, is a `409`, not a silent success. A repeated resolve never
   overwrites the original `resolvedAt`.
 - Reassigning a ticket moves ownership: the previous agent can no longer act
-  on it. Once work has started, assignment returns `409`.
+  on it, even if they had already started work.
 - A `REOPENED` ticket stays with its agent, who can start work on it again
   directly.
 
@@ -953,12 +950,12 @@ needs neither a live database nor any environment variables:
 |---|---|---|
 | `TicketServiceTest` | unit (Mockito) | organization derived from the customer, server-controlled fields on create, ticket number generation, update touching only title/description/category |
 | `UserServiceTest` | unit (Mockito) | organization resolution, `SUPER_ADMIN` without an organization, rejection of an organization-scoped role with no organization, no password on the response record |
-| `TicketWorkflowServiceTest` | unit (Mockito) | every assignment rule: valid assignment and reassignment, idempotent same-agent assign, each non-admin role, inactive and cross-organization admin, each non-agent role, inactive and cross-organization agent, each non-assignable status, and that nothing is saved on any rejection; start and resolve by the assigned agent, refusal of every other actor (other agent, admin, customer, unassigned ticket, deactivated agent, changed role), every invalid source status, and `resolvedAt` handling; reassigning and restarting `REOPENED` tickets; reopen and close by every allowed and refused actor, every invalid status, reopen-window and admin-close-window boundaries against a fixed clock |
+| `TicketWorkflowServiceTest` | unit (Mockito) | every assignment rule: valid assignment and reassignment, idempotent same-agent assign, each non-admin role, inactive and cross-organization admin, each non-agent role, inactive and cross-organization agent, each non-assignable status, and that nothing is saved on any rejection; start and resolve by the assigned agent, refusal of every other actor (other agent, admin, customer, unassigned ticket, deactivated agent, changed role), every invalid source status, and `resolvedAt` handling; reassigning `IN_PROGRESS` tickets back to `ASSIGNED` without undoing same-agent progress; reassigning and restarting `REOPENED` tickets; reopen and close by every allowed and refused actor, every invalid status, reopen-window and admin-close-window boundaries against a fixed clock |
 | `TicketWorkflowPropertiesTest` | unit (Spring `Binder`) | `helpdesk.tickets.*` defaults, overrides from environment variables named as documented, rejection of negative windows |
 | `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assign, start, resolve, close and reopen mapped to `200`/`400`/`403`/`409` |
 | `TicketApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full organization to user to ticket flow through the real web, service and persistence layers, asserting no `password` or `hibernateLazyInitializer` anywhere in the payload |
 | `TicketAssignmentIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | assignment persisted and readable back, reassignment, and that cross-organization agents, cross-organization admins, non-admin actors, non-agent targets and unknown ids are rejected with the stored ticket left `OPEN` and unassigned |
-| `TicketAgentWorkflowIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full `OPEN` → `ASSIGNED` → `IN_PROGRESS` → `RESOLVED` lifecycle persisted; resolve-before-start, double start and double resolve refused; other agents and the admin forbidden; reassignment transferring ownership; no reassignment once work has started |
+| `TicketAgentWorkflowIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full `OPEN` → `ASSIGNED` → `IN_PROGRESS` → `RESOLVED` lifecycle persisted; resolve-before-start, double start and double resolve refused; other agents and the admin forbidden; reassignment transferring ownership, including of in-progress work; no reassignment once resolved |
 | `TicketReopenCloseIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | close, reopen, re-resolve and close again with `reopenCount` persisted; admin close refused before 3 hours and allowed after; reopen refused after 7 days; reassignment of a reopened ticket; other customers, the agent and a cross-organization admin forbidden. Time windows are tested by advancing a `MutableClock` rather than waiting |
 
 ---

@@ -358,7 +358,7 @@ class TicketWorkflowServiceTest {
     class InvalidStatus {
 
         @ParameterizedTest(name = "cannot assign a {0} ticket")
-        @EnumSource(value = TicketStatus.class, names = {"IN_PROGRESS", "RESOLVED", "CLOSED"})
+        @EnumSource(value = TicketStatus.class, names = {"RESOLVED", "CLOSED"})
         void rejectsNonAssignableStatuses(TicketStatus status) {
             ticket.setStatus(status);
             givenTicketAndAdmin();
@@ -609,6 +609,40 @@ class TicketWorkflowServiceTest {
 
             assertThat(response.status()).isEqualTo(TicketStatus.IN_PROGRESS);
             assertThat(response.updatedAt()).isEqualTo(NOW);
+        }
+    }
+
+    @Nested
+    @DisplayName("Reassigning in-progress tickets")
+    class InProgressReassignment {
+
+        @Test
+        @DisplayName("an admin moves an IN_PROGRESS ticket to a different agent, sending it back to ASSIGNED")
+        void reassignsInProgressTicket() {
+            User previousAgent = user(21L, "Pat Agent", UserRole.SUPPORT_AGENT, acme);
+            ticket.setStatus(TicketStatus.IN_PROGRESS);
+            ticket.setAssignedAgent(previousAgent);
+            givenTicketAdminAndAgent();
+            when(ticketRepository.save(ticket)).thenReturn(ticket);
+
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+
+            assertThat(response.status()).isEqualTo(TicketStatus.ASSIGNED);
+            assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
+            assertThat(response.updatedAt()).isEqualTo(NOW);
+        }
+
+        @Test
+        @DisplayName("assigning an IN_PROGRESS ticket to its current agent does not undo their progress")
+        void sameAgentKeepsInProgress() {
+            ticket.setStatus(TicketStatus.IN_PROGRESS);
+            ticket.setAssignedAgent(agent);
+            givenTicketAdminAndAgent();
+
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+
+            assertThat(response.status()).isEqualTo(TicketStatus.IN_PROGRESS);
+            assertNothingSaved();
         }
     }
 
