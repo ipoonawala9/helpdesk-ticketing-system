@@ -175,15 +175,17 @@ class TicketAgentWorkflowIntegrationTest extends ApiIntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("unknown ticket and unknown agent are 404s")
-    void unknownIdsAreNotFound() throws Exception {
+    @DisplayName("an unknown ticket is a 404, and a token for a user that does not exist is a 401")
+    void unknownIds() throws Exception {
         startWork(999_999L, agentId)
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.path").value("/api/tickets/999999/start"));
 
-        resolve(ticketId, 999_999L)
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.message").value("User with ID 999999 not found"));
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/tickets/{id}/resolve", ticketId)
+                        .with(bearer(tokenForUserId(999_999L))))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Invalid or expired access token"));
     }
 
     private void assertStored(String expectedStatus) throws Exception {

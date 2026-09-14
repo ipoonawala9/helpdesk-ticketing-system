@@ -1,6 +1,8 @@
 package com.ibrahim.helpdesk.user.service;
 
 import com.ibrahim.helpdesk.exception.BusinessRuleException;
+import com.ibrahim.helpdesk.exception.EmailAlreadyInUseException;
+import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.OrganizationNotFoundException;
 import com.ibrahim.helpdesk.organization.entity.Organization;
 import com.ibrahim.helpdesk.organization.service.OrganizationService;
@@ -9,17 +11,25 @@ import com.ibrahim.helpdesk.user.dto.UserResponse;
 import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.entity.UserRole;
 import com.ibrahim.helpdesk.user.repository.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+import org.springframework.security.crypto.password.PasswordEncoder;
+
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -27,101 +37,276 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class UserServiceTest {
 
+    private static final long SUPER_ADMIN_ID = 100L;
+    private static final long ORG_ADMIN_ID = 10L;
+
     @Mock
     private UserRepository userRepository;
 
     @Mock
     private OrganizationService organizationService;
 
-    @InjectMocks
+    private final PasswordEncoder passwordEncoder = PasswordEncoderFactories.createDelegatingPasswordEncoder();
+
     private UserService userService;
 
-    private Organization organization() {
+    private Organization acme;
+    private Organization globex;
+    private User superAdmin;
+    private User orgAdmin;
+
+    @BeforeEach
+    void setUp() {
+        userService = new UserService(userRepository, organizationService, passwordEncoder);
+
+        acme = organization(7L, "Acme Ltd");
+        globex = organization(8L, "Globex Corp");
+        superAdmin = user(SUPER_ADMIN_ID, UserRole.SUPER_ADMIN, null);
+        orgAdmin = user(ORG_ADMIN_ID, UserRole.ORG_ADMIN, acme);
+    }
+
+    private static Organization organization(long id, String name) {
         Organization organization = new Organization();
-        organization.setId(7L);
-        organization.setName("Acme Ltd");
+        organization.setId(id);
+        organization.setName(name);
         return organization;
     }
 
-    @Test
-    @DisplayName("createUser activates the user and attaches the resolved organization")
-    void createUserAttachesOrganization() {
-        when(organizationService.findOrThrow(7L)).thenReturn(organization());
+    private static User user(long id, UserRole role, Organization organization) {
+        User user = new User();
+        user.setId(id);
+        user.setName(role + " " + id);
+        user.setEmail("user" + id + "@example.test");
+        user.setRole(role);
+        user.setActive(true);
+        user.setOrganization(organization);
+        return user;
+    }
+
+    private static CreateUserRequest request(UserRole role, Long organizationId) {
+        return new CreateUserRequest("Dana Customer", "Dana@Acme.test", "correct-horse",
+                "+44 7700 900123", role, organizationId);
+    }
+
+    private void givenCreator(User creator) {
+        when(userRepository.findById(creator.getId())).thenReturn(Optional.of(creator));
+    }
+
+    private User savedUser() {
+        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        verify(userRepository).save(captor.capture());
+        return captor.getValue();
+    }
+
+    private void stubSave() {
         when(userRepository.save(any(User.class))).thenAnswer(i -> {
             User u = i.getArgument(0);
             u.setId(3L);
             return u;
         });
-
-        UserResponse response = userService.createUser(new CreateUserRequest(
-                "Dana Customer", "dana@acme.test", "correct-horse",
-                "+44 7700 900123", UserRole.CUSTOMER, 7L));
-
-        assertThat(response.id()).isEqualTo(3L);
-        assertThat(response.active()).isTrue();
-        assertThat(response.organization().id()).isEqualTo(7L);
-        assertThat(response.role()).isEqualTo(UserRole.CUSTOMER);
     }
 
-    @Test
-    @DisplayName("createUser ignores any client attempt to set active or id, and never echoes the password")
-    void createUserBuildsEntityFromRequestOnly() {
-        when(organizationService.findOrThrow(7L)).thenReturn(organization());
-        when(userRepository.save(any(User.class))).thenAnswer(i -> i.getArgument(0));
+    @Nested
+    @DisplayName("Created accounts")
+    class CreatedAccounts {
 
-        userService.createUser(new CreateUserRequest(
-                "Dana Customer", "dana@acme.test", "correct-horse",
-                null, UserRole.CUSTOMER, 7L));
+        @Test
+        @DisplayName("the password is stored only as a bcrypt hash that matches the original")
+        void passwordIsHashed() {
+            givenCreator(superAdmin);
+            when(organizationService.findOrThrow(7L)).thenReturn(acme);
+            stubSave();
 
-        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
-        verify(userRepository).save(captor.capture());
+            userService.createUser(request(UserRole.CUSTOMER, 7L), SUPER_ADMIN_ID);
 
-        User saved = captor.getValue();
-        assertThat(saved.getId()).isNull();
-        assertThat(saved.getActive()).isTrue();
-        assertThat(saved.getPassword()).isEqualTo("correct-horse");
+            String stored = savedUser().getPassword();
+            assertThat(stored).startsWith("{bcrypt}").doesNotContain("correct-horse");
+            assertThat(passwordEncoder.matches("correct-horse", stored)).isTrue();
+        }
 
-        // UserResponse has no password component at all, so it cannot leak.
-        assertThat(UserResponse.class.getRecordComponents())
-                .extracting(java.lang.reflect.RecordComponent::getName)
-                .doesNotContain("password");
+        @Test
+        @DisplayName("the email is stored trimmed and lower-case, the account is active, and id comes from the database")
+        void emailNormalisedAndActive() {
+            givenCreator(superAdmin);
+            when(organizationService.findOrThrow(7L)).thenReturn(acme);
+            stubSave();
+
+            UserResponse response = userService.createUser(new CreateUserRequest(
+                    "Dana", "  Dana@Acme.TEST ", "correct-horse", null, UserRole.CUSTOMER, 7L), SUPER_ADMIN_ID);
+
+            User saved = savedUser();
+            assertThat(saved.getEmail()).isEqualTo("dana@acme.test");
+            assertThat(saved.getActive()).isTrue();
+            assertThat(response.id()).isEqualTo(3L);
+            assertThat(UserResponse.class.getRecordComponents())
+                    .extracting(java.lang.reflect.RecordComponent::getName)
+                    .doesNotContain("password");
+        }
+
+        @Test
+        @DisplayName("an email already in use, in any letter case, is refused with 409")
+        void duplicateEmailRefused() {
+            givenCreator(superAdmin);
+            when(organizationService.findOrThrow(7L)).thenReturn(acme);
+            when(userRepository.existsByEmailIgnoreCase("dana@acme.test")).thenReturn(true);
+
+            assertThatThrownBy(() -> userService.createUser(request(UserRole.CUSTOMER, 7L), SUPER_ADMIN_ID))
+                    .isInstanceOf(EmailAlreadyInUseException.class)
+                    .hasMessage("An account with this email already exists");
+
+            verify(userRepository, never()).save(any(User.class));
+        }
     }
 
-    @Test
-    @DisplayName("createUser rejects an organization-scoped role without an organization")
-    void createUserRequiresOrganizationForScopedRoles() {
-        assertThatThrownBy(() -> userService.createUser(new CreateUserRequest(
-                "Dana Customer", "dana@acme.test", "correct-horse",
-                null, UserRole.CUSTOMER, null)))
-                .isInstanceOf(BusinessRuleException.class)
-                .hasMessageContaining("organizationId is required");
+    @Nested
+    @DisplayName("SUPER_ADMIN creating users")
+    class SuperAdminCreates {
+
+        @ParameterizedTest(name = "can create a {0}")
+        @EnumSource(value = UserRole.class, names = {"CUSTOMER", "SUPPORT_AGENT", "ORG_ADMIN"})
+        void anyOrganizationScopedRole(UserRole role) {
+            givenCreator(superAdmin);
+            when(organizationService.findOrThrow(8L)).thenReturn(globex);
+            stubSave();
+
+            UserResponse response = userService.createUser(request(role, 8L), SUPER_ADMIN_ID);
+
+            assertThat(response.role()).isEqualTo(role);
+            assertThat(response.organization().id()).isEqualTo(8L);
+        }
+
+        @Test
+        @DisplayName("can create another SUPER_ADMIN without an organization")
+        void superAdminWithoutOrganization() {
+            givenCreator(superAdmin);
+            stubSave();
+
+            assertThat(userService.createUser(request(UserRole.SUPER_ADMIN, null), SUPER_ADMIN_ID).organization())
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("must name an organization for organization-scoped roles")
+        void organizationRequired() {
+            givenCreator(superAdmin);
+
+            assertThatThrownBy(() -> userService.createUser(request(UserRole.CUSTOMER, null), SUPER_ADMIN_ID))
+                    .isInstanceOf(BusinessRuleException.class)
+                    .hasMessageContaining("organizationId is required");
+        }
+
+        @Test
+        @DisplayName("an unknown organization is a 404")
+        void unknownOrganization() {
+            givenCreator(superAdmin);
+            when(organizationService.findOrThrow(99L)).thenThrow(new OrganizationNotFoundException(99L));
+
+            assertThatThrownBy(() -> userService.createUser(request(UserRole.CUSTOMER, 99L), SUPER_ADMIN_ID))
+                    .isInstanceOf(OrganizationNotFoundException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("ORG_ADMIN creating users")
+    class OrgAdminCreates {
+
+        @ParameterizedTest(name = "can create a {0} in their own organization without naming it")
+        @EnumSource(value = UserRole.class, names = {"CUSTOMER", "SUPPORT_AGENT"})
+        void staffAndCustomersInOwnOrganization(UserRole role) {
+            givenCreator(orgAdmin);
+            stubSave();
+
+            UserResponse response = userService.createUser(request(role, null), ORG_ADMIN_ID);
+
+            assertThat(response.organization().id()).isEqualTo(7L);
+            verify(organizationService, never()).findOrThrow(any());
+        }
+
+        @Test
+        @DisplayName("may name their own organization explicitly")
+        void ownOrganizationNamed() {
+            givenCreator(orgAdmin);
+            stubSave();
+
+            assertThat(userService.createUser(request(UserRole.CUSTOMER, 7L), ORG_ADMIN_ID).organization().id())
+                    .isEqualTo(7L);
+        }
+
+        @ParameterizedTest(name = "cannot create a {0}")
+        @EnumSource(value = UserRole.class, names = {"ORG_ADMIN", "SUPER_ADMIN"})
+        void cannotCreateAdmins(UserRole role) {
+            givenCreator(orgAdmin);
+
+            assertThatThrownBy(() -> userService.createUser(request(role, null), ORG_ADMIN_ID))
+                    .isInstanceOf(ForbiddenOperationException.class)
+                    .hasMessage("Organization administrators can only create CUSTOMER and SUPPORT_AGENT accounts");
+
+            verify(userRepository, never()).save(any(User.class));
+        }
+
+        @Test
+        @DisplayName("cannot create users in another organization")
+        void cannotTargetOtherOrganization() {
+            givenCreator(orgAdmin);
+
+            assertThatThrownBy(() -> userService.createUser(request(UserRole.CUSTOMER, 8L), ORG_ADMIN_ID))
+                    .isInstanceOf(ForbiddenOperationException.class)
+                    .hasMessage("Organization administrators can only create users in their own organization");
+
+            verify(userRepository, never()).save(any(User.class));
+            verify(userRepository, never()).existsByEmailIgnoreCase(anyString());
+        }
+    }
+
+    @ParameterizedTest(name = "a {0} cannot create users")
+    @EnumSource(value = UserRole.class, names = {"CUSTOMER", "SUPPORT_AGENT"})
+    void nonAdminsCannotCreateUsers(UserRole role) {
+        User creator = user(20L, role, acme);
+        givenCreator(creator);
+
+        assertThatThrownBy(() -> userService.createUser(request(UserRole.CUSTOMER, 7L), 20L))
+                .isInstanceOf(ForbiddenOperationException.class)
+                .hasMessage("Only administrators can create users");
 
         verify(userRepository, never()).save(any(User.class));
     }
 
-    @Test
-    @DisplayName("createUser allows a SUPER_ADMIN with no organization")
-    void createUserAllowsSuperAdminWithoutOrganization() {
-        when(userRepository.save(any(User.class))).thenAnswer(i -> i.getArgument(0));
+    @Nested
+    @DisplayName("Viewing users")
+    class Viewing {
 
-        UserResponse response = userService.createUser(new CreateUserRequest(
-                "Root Admin", "root@helpdesk.test", "correct-horse",
-                null, UserRole.SUPER_ADMIN, null));
+        private final User target = user(3L, UserRole.CUSTOMER, null);
 
-        assertThat(response.organization()).isNull();
-    }
+        @BeforeEach
+        void targetInAcme() {
+            target.setOrganization(acme);
+        }
 
-    @Test
-    @DisplayName("createUser propagates an unknown organization as a 404-mapped exception")
-    void createUserRejectsUnknownOrganization() {
-        when(organizationService.findOrThrow(99L))
-                .thenThrow(new OrganizationNotFoundException(99L));
+        private void given(User viewer) {
+            when(userRepository.findById(3L)).thenReturn(Optional.of(target));
+            if (viewer != target) {
+                when(userRepository.findById(viewer.getId())).thenReturn(Optional.of(viewer));
+            }
+        }
 
-        assertThatThrownBy(() -> userService.createUser(new CreateUserRequest(
-                "Dana Customer", "dana@acme.test", "correct-horse",
-                null, UserRole.CUSTOMER, 99L)))
-                .isInstanceOf(OrganizationNotFoundException.class);
+        @Test
+        void selfSuperAdminAndSameOrgAdminAllowed() {
+            for (User viewer : java.util.List.of(target, superAdmin, orgAdmin)) {
+                given(viewer);
+                assertThat(userService.getUserById(3L, viewer.getId()).id()).isEqualTo(3L);
+            }
+        }
 
-        verify(userRepository, never()).save(any(User.class));
+        @Test
+        void othersRefused() {
+            for (User viewer : java.util.List.of(
+                    user(4L, UserRole.CUSTOMER, acme),
+                    user(20L, UserRole.SUPPORT_AGENT, acme),
+                    user(11L, UserRole.ORG_ADMIN, globex))) {
+                given(viewer);
+                assertThatThrownBy(() -> userService.getUserById(3L, viewer.getId()))
+                        .isInstanceOf(ForbiddenOperationException.class);
+            }
+        }
     }
 }

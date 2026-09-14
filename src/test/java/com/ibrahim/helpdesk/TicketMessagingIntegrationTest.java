@@ -78,7 +78,7 @@ class TicketMessagingIntegrationTest extends ApiIntegrationTestSupport {
 
         postMessage(ticketId, adminId, "Admin here")
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.message").value("Only the ticket's customer and its assigned agent can post messages"));
+                .andExpect(jsonPath("$.message").value("You do not have permission to perform this action"));
 
         getMessages(ticketId, adminId).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
     }
@@ -150,15 +150,18 @@ class TicketMessagingIntegrationTest extends ApiIntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("unknown ticket, unknown user and a missing userId are reported correctly")
+    @DisplayName("an unknown ticket is a 404, and reading or posting without a token is a 401")
     void badReferences() throws Exception {
         postMessage(999_999L, customerId, "Hi").andExpect(status().isNotFound());
-        getMessages(ticketId, 999_999L)
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.message").value("User with ID 999999 not found"));
+
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                         .get("/api/tickets/{id}/messages", ticketId))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/tickets/{id}/messages", ticketId)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"content\":\"Hi\"}"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -167,7 +170,7 @@ class TicketMessagingIntegrationTest extends ApiIntegrationTestSupport {
         postMessage(ticketId, customerId, "First").andExpect(status().isCreated());
         postMessage(ticketId, customerId, "Second").andExpect(status().isCreated());
 
-        mockMvc.perform(delete("/api/tickets/{id}", ticketId)).andExpect(status().isNoContent());
+        mockMvc.perform(delete("/api/tickets/{id}", ticketId).with(as(adminId))).andExpect(status().isNoContent());
 
         getMessages(ticketId, customerId).andExpect(status().isNotFound());
     }

@@ -1,12 +1,18 @@
 package com.ibrahim.helpdesk.exception;
 
+import com.ibrahim.helpdesk.security.auth.InvalidCredentialsException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -68,6 +74,60 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .status(HttpStatus.CONFLICT)
                 .body(ApiErrorResponse.of(409, "Conflict", ex.getMessage(), request.getRequestURI()));
+    }
+
+    @ExceptionHandler(EmailAlreadyInUseException.class)
+    public ResponseEntity<ApiErrorResponse> handleEmailAlreadyInUse(
+            EmailAlreadyInUseException ex, HttpServletRequest request) {
+
+        return conflict(ex.getMessage(), request);
+    }
+
+    /**
+     * A database constraint rejected a write, for example two users created
+     * with the same email at the same moment. Constraint details are not
+     * echoed back.
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiErrorResponse> handleDataIntegrityViolation(
+            DataIntegrityViolationException ex, HttpServletRequest request) {
+
+        log.warn("Constraint violation for {} {}: {}", request.getMethod(), request.getRequestURI(),
+                ex.getMostSpecificCause().getMessage());
+        return conflict("The request conflicts with existing data", request);
+    }
+
+    @ExceptionHandler(InvalidCredentialsException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidCredentials(
+            InvalidCredentialsException ex, HttpServletRequest request) {
+
+        return unauthorized(ex.getMessage(), "Bearer", request);
+    }
+
+    /**
+     * No valid access token: either none was sent, or it is malformed, expired,
+     * signed with the wrong key, or belongs to a user who no longer exists or
+     * is inactive.
+     */
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ApiErrorResponse> handleAuthentication(
+            AuthenticationException ex, HttpServletRequest request) {
+
+        if (ex instanceof OAuth2AuthenticationException) {
+            return unauthorized("Invalid or expired access token", "Bearer error=\"invalid_token\"", request);
+        }
+        return unauthorized("Authentication is required", "Bearer", request);
+    }
+
+    /** Authenticated, but the user's role does not allow this endpoint. */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiErrorResponse> handleAccessDenied(
+            AccessDeniedException ex, HttpServletRequest request) {
+
+        return ResponseEntity
+                .status(HttpStatus.FORBIDDEN)
+                .body(ApiErrorResponse.of(403, "Forbidden",
+                        "You do not have permission to perform this action", request.getRequestURI()));
     }
 
     /**
@@ -155,6 +215,20 @@ public class GlobalExceptionHandler {
                 .status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiErrorResponse.of(500, "Internal Server Error",
                         "An unexpected error occurred", request.getRequestURI()));
+    }
+
+    private ResponseEntity<ApiErrorResponse> conflict(String message, HttpServletRequest request) {
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(ApiErrorResponse.of(409, "Conflict", message, request.getRequestURI()));
+    }
+
+    private ResponseEntity<ApiErrorResponse> unauthorized(
+            String message, String wwwAuthenticate, HttpServletRequest request) {
+        return ResponseEntity
+                .status(HttpStatus.UNAUTHORIZED)
+                .header(HttpHeaders.WWW_AUTHENTICATE, wwwAuthenticate)
+                .body(ApiErrorResponse.of(401, "Unauthorized", message, request.getRequestURI()));
     }
 
     private ResponseEntity<ApiErrorResponse> notFound(String message, HttpServletRequest request) {

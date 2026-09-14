@@ -45,15 +45,11 @@ class TicketPriorityIntegrationTest extends ApiIntegrationTestSupport {
     private ResultActions create(String category, String title, String description, String extraJson)
             throws Exception {
         return mockMvc.perform(post("/api/tickets")
+                .with(as(customerId))
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
-                        {"title":"%s","description":"%s","category":"%s","customerId":%d%s}
-                        """.formatted(title, description, category, customerId, extraJson)));
-    }
-
-    private long idOf(ResultActions result) throws Exception {
-        return JsonPath.parse(result.andReturn().getResponse().getContentAsString())
-                .read("$.id", Integer.class).longValue();
+                        {"title":"%s","description":"%s","category":"%s"%s}
+                        """.formatted(title, description, category, extraJson)));
     }
 
     @Test
@@ -84,6 +80,7 @@ class TicketPriorityIntegrationTest extends ApiIntegrationTestSupport {
                 .andExpect(jsonPath("$.priority").value("MEDIUM")));
 
         mockMvc.perform(put("/api/tickets/{id}", ticketId)
+                        .with(as(customerId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"title":"Toolbar","description":"Now the whole app crashes on start","category":"SOFTWARE"}
@@ -92,6 +89,7 @@ class TicketPriorityIntegrationTest extends ApiIntegrationTestSupport {
                 .andExpect(jsonPath("$.priority").value("HIGH"));
 
         mockMvc.perform(put("/api/tickets/{id}", ticketId)
+                        .with(as(customerId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"title":"Toolbar","description":"Fixed itself, just a question now","category":"OTHER"}

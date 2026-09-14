@@ -44,7 +44,7 @@ class TicketAssignmentIntegrationTest extends ApiIntegrationTestSupport {
                 .andExpect(jsonPath("$.assignedAgent.id").value((int) acmeAgentId))
                 .andExpect(jsonPath("$.assignedAgent.name").value("Sam Agent"));
 
-        mockMvc.perform(get("/api/tickets/{id}", ticketId))
+        mockMvc.perform(get("/api/tickets/{id}", ticketId).with(asSuperAdmin()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ASSIGNED"))
                 .andExpect(jsonPath("$.assignedAgent.id").value((int) acmeAgentId));
@@ -92,7 +92,7 @@ class TicketAssignmentIntegrationTest extends ApiIntegrationTestSupport {
     void rejectsNonAdminActor() throws Exception {
         assign(ticketId, acmeAgentId, acmeAgentId)
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.message").value("Only organization administrators can assign tickets"));
+                .andExpect(jsonPath("$.message").value("You do not have permission to perform this action"));
 
         assertTicketStillOpenAndUnassigned();
     }

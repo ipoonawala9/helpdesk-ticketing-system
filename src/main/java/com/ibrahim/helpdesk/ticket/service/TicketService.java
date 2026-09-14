@@ -1,5 +1,6 @@
 package com.ibrahim.helpdesk.ticket.service;
 
+import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.TicketNotFoundException;
 import com.ibrahim.helpdesk.organization.entity.Organization;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
@@ -12,6 +13,7 @@ import com.ibrahim.helpdesk.ticket.priority.PriorityInput;
 import com.ibrahim.helpdesk.ticket.priority.TicketPriorityPolicy;
 import com.ibrahim.helpdesk.ticket.repository.TicketRepository;
 import com.ibrahim.helpdesk.user.entity.User;
+import com.ibrahim.helpdesk.user.entity.UserRole;
 import com.ibrahim.helpdesk.user.service.UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -29,14 +31,17 @@ public class TicketService {
     private final TicketPriorityPolicy priorityPolicy;
 
     /**
-     * Opens a ticket on behalf of a customer. Organization is derived from the
-     * customer and never read from the request; status, priority, agent, reopen
-     * count and timestamps are all set here.
+     * Opens a ticket for the authenticated customer. Organization is derived
+     * from the customer and never read from the request; status, priority,
+     * agent, reopen count and timestamps are all set here.
      */
     @Transactional
-    public TicketResponse createTicket(CreateTicketRequest request) {
+    public TicketResponse createTicket(CreateTicketRequest request, Long customerId) {
 
-        User customer = userService.findOrThrow(request.customerId());
+        User customer = userService.findOrThrow(customerId);
+        if (customer.getRole() != UserRole.CUSTOMER) {
+            throw new ForbiddenOperationException("Only customers can open tickets");
+        }
         Organization organization = customer.getOrganization();
 
         Ticket ticket = new Ticket();
@@ -68,6 +73,10 @@ public class TicketService {
         return TicketMapper.toResponse(ticketRepository.save(savedTicket));
     }
 
+    /**
+     * Every ticket in the system. Restricted to SUPER_ADMIN at the controller
+     * until organization-scoped ticket lists exist.
+     */
     @Transactional(readOnly = true)
     public List<TicketResponse> getAllTickets() {
         return ticketRepository.findAll()
@@ -76,9 +85,23 @@ public class TicketService {
                 .toList();
     }
 
+    /**
+     * Visible to the ticket's customer, its assigned agent, administrators of
+     * its organization, and SUPER_ADMIN.
+     */
     @Transactional(readOnly = true)
-    public TicketResponse getTicketById(Long id) {
-        return TicketMapper.toResponse(findOrThrow(id));
+    public TicketResponse getTicketById(Long id, Long viewerId) {
+        Ticket ticket = findOrThrow(id);
+        User viewer = userService.findOrThrow(viewerId);
+
+        boolean allowed = viewer.getRole() == UserRole.SUPER_ADMIN
+                || TicketParticipants.isCustomer(ticket, viewer)
+                || TicketParticipants.isAssignedAgent(ticket, viewer)
+                || TicketParticipants.isOrgAdmin(ticket, viewer);
+        if (!allowed) {
+            throw new ForbiddenOperationException("You do not have access to this ticket");
+        }
+        return TicketMapper.toResponse(ticket);
     }
 
     /**
@@ -88,9 +111,12 @@ public class TicketService {
      * updatedAt are untouched by design.
      */
     @Transactional
-    public TicketResponse updateTicket(Long id, UpdateTicketRequest request) {
+    public TicketResponse updateTicket(Long id, UpdateTicketRequest request, Long editorId) {
 
         Ticket ticket = findOrThrow(id);
+        if (!TicketParticipants.isCustomer(ticket, userService.findOrThrow(editorId))) {
+            throw new ForbiddenOperationException("Only the customer who opened this ticket can edit it");
+        }
 
         ticket.setTitle(request.title());
         ticket.setDescription(request.description());
@@ -101,9 +127,15 @@ public class TicketService {
         return TicketMapper.toResponse(ticketRepository.save(ticket));
     }
 
+    /** Only an administrator of the ticket's organization may delete it. */
     @Transactional
-    public void deleteTicket(Long id) {
-        ticketRepository.delete(findOrThrow(id));
+    public void deleteTicket(Long id, Long deleterId) {
+        Ticket ticket = findOrThrow(id);
+        if (!TicketParticipants.isOrgAdmin(ticket, userService.findOrThrow(deleterId))) {
+            throw new ForbiddenOperationException(
+                    "Only an administrator of this ticket's organization can delete it");
+        }
+        ticketRepository.delete(ticket);
     }
 
     /**

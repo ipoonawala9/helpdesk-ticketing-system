@@ -1,22 +1,29 @@
 package com.ibrahim.helpdesk.organization.service;
 
+import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.OrganizationNotFoundException;
+import com.ibrahim.helpdesk.exception.UserNotFoundException;
 import com.ibrahim.helpdesk.organization.dto.CreateOrganizationRequest;
 import com.ibrahim.helpdesk.organization.dto.OrganizationResponse;
 import com.ibrahim.helpdesk.organization.entity.Organization;
 import com.ibrahim.helpdesk.organization.mapper.OrganizationMapper;
 import com.ibrahim.helpdesk.organization.repository.OrganizationRepository;
+import com.ibrahim.helpdesk.user.entity.User;
+import com.ibrahim.helpdesk.user.entity.UserRole;
+import com.ibrahim.helpdesk.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Objects;
 
 @Service
 @RequiredArgsConstructor
 public class OrganizationService {
 
     private final OrganizationRepository organizationRepository;
+    private final UserRepository userRepository;
 
     @Transactional
     public OrganizationResponse createOrganization(CreateOrganizationRequest request) {
@@ -32,9 +39,19 @@ public class OrganizationService {
                 .toList();
     }
 
+    /** A SUPER_ADMIN may view any organization; everyone else only their own. */
     @Transactional(readOnly = true)
-    public OrganizationResponse getOrganizationById(Long id) {
-        return OrganizationMapper.toResponse(findOrThrow(id));
+    public OrganizationResponse getOrganizationById(Long id, Long viewerId) {
+        Organization organization = findOrThrow(id);
+        User viewer = userRepository.findById(viewerId)
+                .orElseThrow(() -> new UserNotFoundException(viewerId));
+
+        boolean member = viewer.getOrganization() != null
+                && Objects.equals(viewer.getOrganization().getId(), organization.getId());
+        if (viewer.getRole() != UserRole.SUPER_ADMIN && !member) {
+            throw new ForbiddenOperationException("You can only view your own organization");
+        }
+        return OrganizationMapper.toResponse(organization);
     }
 
     /**

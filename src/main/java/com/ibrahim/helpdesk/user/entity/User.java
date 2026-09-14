@@ -16,8 +16,12 @@ public class User {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     private String name;
+
+    /** Stored lower-case; unique across all organizations because it is the login name. */
+    @Column(unique = true)
     private String email;
 
+    /** Always a {@code {bcrypt}...} hash, never plain text. */
     @JsonIgnore
     private String password;
     private String phoneNumber;

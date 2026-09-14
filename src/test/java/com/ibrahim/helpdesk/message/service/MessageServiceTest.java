@@ -118,10 +118,6 @@ class MessageServiceTest {
         });
     }
 
-    private static PostMessageRequest post(long senderId, String content) {
-        return new PostMessageRequest(senderId, content);
-    }
-
     @Nested
     @DisplayName("Posting")
     class Posting {
@@ -132,7 +128,7 @@ class MessageServiceTest {
             given(customer);
             stubSave();
 
-            MessageResponse response = messageService.postMessage(TICKET_ID, post(CUSTOMER_ID, "Still jamming"));
+            MessageResponse response = messageService.postMessage(TICKET_ID, new PostMessageRequest("Still jamming"), CUSTOMER_ID);
 
             ArgumentCaptor<Message> saved = ArgumentCaptor.forClass(Message.class);
             verify(messageRepository).save(saved.capture());
@@ -153,7 +149,7 @@ class MessageServiceTest {
             given(agent);
             stubSave();
 
-            MessageResponse response = messageService.postMessage(TICKET_ID, post(AGENT_ID, "Try a new cartridge"));
+            MessageResponse response = messageService.postMessage(TICKET_ID, new PostMessageRequest("Try a new cartridge"), AGENT_ID);
 
             assertThat(response.sender().id()).isEqualTo(AGENT_ID);
         }
@@ -164,7 +160,7 @@ class MessageServiceTest {
             given(customer);
             stubSave();
 
-            MessageResponse response = messageService.postMessage(TICKET_ID, post(CUSTOMER_ID, "  \n Hello \t "));
+            MessageResponse response = messageService.postMessage(TICKET_ID, new PostMessageRequest("  \n Hello \t "), CUSTOMER_ID);
 
             assertThat(response.content()).isEqualTo("Hello");
         }
@@ -177,7 +173,7 @@ class MessageServiceTest {
             given(customer);
             stubSave();
 
-            assertThat(messageService.postMessage(TICKET_ID, post(CUSTOMER_ID, "More info")).content())
+            assertThat(messageService.postMessage(TICKET_ID, new PostMessageRequest("More info"), CUSTOMER_ID).content())
                     .isEqualTo("More info");
         }
 
@@ -188,7 +184,7 @@ class MessageServiceTest {
             given(customer);
             stubSave();
 
-            assertThat(messageService.postMessage(TICKET_ID, post(CUSTOMER_ID, "Hi"))).isNotNull();
+            assertThat(messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), CUSTOMER_ID)).isNotNull();
         }
 
         @Test
@@ -197,7 +193,7 @@ class MessageServiceTest {
             ticket.setStatus(TicketStatus.CLOSED);
             given(customer);
 
-            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, post(CUSTOMER_ID, "Hi")))
+            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), CUSTOMER_ID))
                     .isInstanceOf(InvalidTicketStateException.class)
                     .hasMessage("Cannot post a message on a CLOSED ticket; reopen it first");
 
@@ -209,7 +205,7 @@ class MessageServiceTest {
         void orgAdminCannotPost() {
             given(admin);
 
-            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, post(ADMIN_ID, "Hi")))
+            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), ADMIN_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Only the ticket's customer and its assigned agent can post messages");
 
@@ -222,7 +218,7 @@ class MessageServiceTest {
             User otherAgent = user(21L, UserRole.SUPPORT_AGENT, acme);
             given(otherAgent);
 
-            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, post(21L, "Hi")))
+            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), 21L))
                     .isInstanceOf(ForbiddenOperationException.class);
 
             verify(messageRepository, never()).save(any());
@@ -234,7 +230,7 @@ class MessageServiceTest {
             User otherCustomer = user(2L, UserRole.CUSTOMER, acme);
             given(otherCustomer);
 
-            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, post(2L, "Hi")))
+            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), 2L))
                     .isInstanceOf(ForbiddenOperationException.class);
         }
 
@@ -244,7 +240,7 @@ class MessageServiceTest {
             customer.setActive(false);
             given(customer);
 
-            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, post(CUSTOMER_ID, "Hi")))
+            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), CUSTOMER_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Inactive users cannot post messages");
 
@@ -255,13 +251,13 @@ class MessageServiceTest {
         @DisplayName("unknown ticket and unknown sender are 404s")
         void unknownIds() {
             when(ticketService.findOrThrow(TICKET_ID)).thenThrow(new TicketNotFoundException(TICKET_ID));
-            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, post(CUSTOMER_ID, "Hi")))
+            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), CUSTOMER_ID))
                     .isInstanceOf(TicketNotFoundException.class);
 
             org.mockito.Mockito.reset(ticketService);
             when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
             when(userService.findOrThrow(CUSTOMER_ID)).thenThrow(new UserNotFoundException(CUSTOMER_ID));
-            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, post(CUSTOMER_ID, "Hi")))
+            assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), CUSTOMER_ID))
                     .isInstanceOf(UserNotFoundException.class);
 
             verify(messageRepository, never()).save(any());

@@ -7,10 +7,7 @@ import com.ibrahim.helpdesk.exception.TicketNotFoundException;
 import com.ibrahim.helpdesk.exception.UserNotFoundException;
 import com.ibrahim.helpdesk.organization.entity.Organization;
 import com.ibrahim.helpdesk.ticket.config.TicketWorkflowProperties;
-import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
-import com.ibrahim.helpdesk.ticket.dto.CloseTicketRequest;
-import com.ibrahim.helpdesk.ticket.dto.ReopenTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.entity.Ticket;
 import com.ibrahim.helpdesk.ticket.entity.TicketCategory;
@@ -124,7 +121,7 @@ class TicketWorkflowServiceTest {
     }
 
     private AssignTicketRequest request() {
-        return new AssignTicketRequest(AGENT_ID, ADMIN_ID);
+        return new AssignTicketRequest(AGENT_ID);
     }
 
     private void givenTicketAndAdmin() {
@@ -152,7 +149,7 @@ class TicketWorkflowServiceTest {
             when(ticketRepository.save(ticket)).thenReturn(ticket);
             LocalDateTime before = ticket.getUpdatedAt();
 
-            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.ASSIGNED);
             assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
@@ -167,7 +164,7 @@ class TicketWorkflowServiceTest {
             givenTicketAdminAndAgent();
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
-            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID);
 
             assertThat(response.ticketNumber()).isEqualTo("HD-2026-000042");
             assertThat(response.customer().id()).isEqualTo(1L);
@@ -186,7 +183,7 @@ class TicketWorkflowServiceTest {
             givenTicketAdminAndAgent();
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
-            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.ASSIGNED);
             assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
@@ -200,7 +197,7 @@ class TicketWorkflowServiceTest {
             LocalDateTime before = ticket.getUpdatedAt();
             givenTicketAdminAndAgent();
 
-            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID);
 
             assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
             assertThat(response.updatedAt()).isEqualTo(before);
@@ -217,7 +214,7 @@ class TicketWorkflowServiceTest {
         void rejectsUnknownTicket() {
             when(ticketService.findOrThrow(TICKET_ID)).thenThrow(new TicketNotFoundException(TICKET_ID));
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(TicketNotFoundException.class);
 
             verify(userService, never()).findOrThrow(any());
@@ -230,7 +227,7 @@ class TicketWorkflowServiceTest {
             when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
             when(userService.findOrThrow(ADMIN_ID)).thenThrow(new UserNotFoundException(ADMIN_ID));
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(UserNotFoundException.class);
 
             assertNothingSaved();
@@ -242,7 +239,7 @@ class TicketWorkflowServiceTest {
             givenTicketAndAdmin();
             when(userService.findOrThrow(AGENT_ID)).thenThrow(new UserNotFoundException(AGENT_ID));
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(UserNotFoundException.class)
                     .hasMessageContaining(String.valueOf(AGENT_ID));
 
@@ -261,7 +258,7 @@ class TicketWorkflowServiceTest {
             admin.setRole(role);
             givenTicketAndAdmin();
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Only organization administrators can assign tickets");
 
@@ -275,7 +272,7 @@ class TicketWorkflowServiceTest {
             admin.setActive(false);
             givenTicketAndAdmin();
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Inactive users cannot assign tickets");
 
@@ -288,7 +285,7 @@ class TicketWorkflowServiceTest {
             admin.setOrganization(globex);
             givenTicketAndAdmin();
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Administrators can only assign tickets from their own organization");
 
@@ -308,7 +305,7 @@ class TicketWorkflowServiceTest {
             agent.setRole(role);
             givenTicketAdminAndAgent();
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(BusinessRuleException.class)
                     .hasMessage("Tickets can only be assigned to users with role SUPPORT_AGENT");
 
@@ -321,7 +318,7 @@ class TicketWorkflowServiceTest {
             agent.setActive(false);
             givenTicketAdminAndAgent();
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(BusinessRuleException.class)
                     .hasMessage("Tickets cannot be assigned to an inactive agent");
 
@@ -334,7 +331,7 @@ class TicketWorkflowServiceTest {
             agent.setOrganization(globex);
             givenTicketAdminAndAgent();
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(BusinessRuleException.class)
                     .hasMessage("Agent must belong to the ticket's organization");
 
@@ -349,7 +346,7 @@ class TicketWorkflowServiceTest {
             agent.setOrganization(null);
             givenTicketAdminAndAgent();
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(BusinessRuleException.class)
                     .hasMessage("Agent must belong to the ticket's organization");
 
@@ -367,7 +364,7 @@ class TicketWorkflowServiceTest {
             ticket.setStatus(status);
             givenTicketAndAdmin();
 
-            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request()))
+            assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(InvalidTicketStateException.class)
                     .hasMessage("Cannot assign a ticket with status " + status);
 
@@ -383,9 +380,6 @@ class TicketWorkflowServiceTest {
         when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
     }
 
-    private AgentActionRequest asAgent(long agentId) {
-        return new AgentActionRequest(agentId);
-    }
 
     @Nested
     @DisplayName("Start work (ASSIGNED -> IN_PROGRESS)")
@@ -399,7 +393,7 @@ class TicketWorkflowServiceTest {
             when(ticketRepository.save(ticket)).thenReturn(ticket);
             LocalDateTime before = ticket.getUpdatedAt();
 
-            TicketResponse response = workflowService.startWork(TICKET_ID, asAgent(AGENT_ID));
+            TicketResponse response = workflowService.startWork(TICKET_ID, AGENT_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.IN_PROGRESS);
             assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
@@ -414,7 +408,7 @@ class TicketWorkflowServiceTest {
         void rejectsUnknownTicket() {
             when(ticketService.findOrThrow(TICKET_ID)).thenThrow(new TicketNotFoundException(TICKET_ID));
 
-            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, AGENT_ID))
                     .isInstanceOf(TicketNotFoundException.class);
 
             verify(userService, never()).findOrThrow(any());
@@ -427,7 +421,7 @@ class TicketWorkflowServiceTest {
             givenAssignedTicket(TicketStatus.ASSIGNED);
             when(userService.findOrThrow(AGENT_ID)).thenThrow(new UserNotFoundException(AGENT_ID));
 
-            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, AGENT_ID))
                     .isInstanceOf(UserNotFoundException.class);
 
             assertNothingSaved();
@@ -440,7 +434,7 @@ class TicketWorkflowServiceTest {
             givenAssignedTicket(TicketStatus.ASSIGNED);
             when(userService.findOrThrow(21L)).thenReturn(otherAgent);
 
-            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(21L)))
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, 21L))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Only the assigned agent can start work on this ticket");
 
@@ -454,7 +448,7 @@ class TicketWorkflowServiceTest {
             when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
 
-            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, AGENT_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Only the assigned agent can start work on this ticket");
 
@@ -468,7 +462,7 @@ class TicketWorkflowServiceTest {
             givenAssignedTicket(TicketStatus.ASSIGNED);
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
 
-            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, AGENT_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Inactive users cannot start work on tickets");
 
@@ -482,7 +476,7 @@ class TicketWorkflowServiceTest {
             givenAssignedTicket(TicketStatus.ASSIGNED);
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
 
-            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, AGENT_ID))
                     .isInstanceOf(ForbiddenOperationException.class);
 
             assertNothingSaved();
@@ -494,7 +488,7 @@ class TicketWorkflowServiceTest {
             givenAssignedTicket(status);
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
 
-            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, AGENT_ID))
                     .isInstanceOf(InvalidTicketStateException.class)
                     .hasMessage("Cannot start work on a ticket with status " + status);
 
@@ -514,7 +508,7 @@ class TicketWorkflowServiceTest {
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
-            TicketResponse response = workflowService.resolveTicket(TICKET_ID, asAgent(AGENT_ID));
+            TicketResponse response = workflowService.resolveTicket(TICKET_ID, AGENT_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.RESOLVED);
             assertThat(response.resolvedAt()).isEqualTo(NOW);
@@ -531,7 +525,7 @@ class TicketWorkflowServiceTest {
             givenAssignedTicket(TicketStatus.IN_PROGRESS);
             when(userService.findOrThrow(30L)).thenReturn(actor);
 
-            assertThatThrownBy(() -> workflowService.resolveTicket(TICKET_ID, asAgent(30L)))
+            assertThatThrownBy(() -> workflowService.resolveTicket(TICKET_ID, 30L))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Only the assigned agent can resolve this ticket");
 
@@ -546,7 +540,7 @@ class TicketWorkflowServiceTest {
             givenAssignedTicket(TicketStatus.IN_PROGRESS);
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
 
-            assertThatThrownBy(() -> workflowService.resolveTicket(TICKET_ID, asAgent(AGENT_ID)))
+            assertThatThrownBy(() -> workflowService.resolveTicket(TICKET_ID, AGENT_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Inactive users cannot resolve tickets");
 
@@ -560,7 +554,7 @@ class TicketWorkflowServiceTest {
             LocalDateTime originalResolvedAt = ticket.getResolvedAt();
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
 
-            assertThatThrownBy(() -> workflowService.resolveTicket(TICKET_ID, asAgent(AGENT_ID)))
+            assertThatThrownBy(() -> workflowService.resolveTicket(TICKET_ID, AGENT_ID))
                     .isInstanceOf(InvalidTicketStateException.class)
                     .hasMessage("Cannot resolve a ticket with status " + status);
 
@@ -583,7 +577,7 @@ class TicketWorkflowServiceTest {
             givenTicketAdminAndAgent();
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
-            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.ASSIGNED);
             assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
@@ -596,7 +590,7 @@ class TicketWorkflowServiceTest {
             ticket.setAssignedAgent(agent);
             givenTicketAdminAndAgent();
 
-            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.REOPENED);
             assertNothingSaved();
@@ -609,7 +603,7 @@ class TicketWorkflowServiceTest {
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
-            TicketResponse response = workflowService.startWork(TICKET_ID, asAgent(AGENT_ID));
+            TicketResponse response = workflowService.startWork(TICKET_ID, AGENT_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.IN_PROGRESS);
             assertThat(response.updatedAt()).isEqualTo(NOW);
@@ -629,7 +623,7 @@ class TicketWorkflowServiceTest {
             givenTicketAdminAndAgent();
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
-            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.ASSIGNED);
             assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
@@ -643,7 +637,7 @@ class TicketWorkflowServiceTest {
             ticket.setAssignedAgent(agent);
             givenTicketAdminAndAgent();
 
-            TicketResponse response = workflowService.assignTicket(TICKET_ID, request());
+            TicketResponse response = workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.IN_PROGRESS);
             assertNothingSaved();
@@ -671,7 +665,7 @@ class TicketWorkflowServiceTest {
     @DisplayName("Reopen (RESOLVED or CLOSED -> REOPENED)")
     class Reopen {
 
-        private final ReopenTicketRequest byCustomer = new ReopenTicketRequest(CUSTOMER_ID);
+        private final long byCustomer = CUSTOMER_ID;
 
         @Test
         @DisplayName("the customer reopens a RESOLVED ticket; the agent is kept and timestamps are cleared")
@@ -755,7 +749,7 @@ class TicketWorkflowServiceTest {
             givenResolvedTicket(NOW.minusMinutes(30));
             when(userService.findOrThrow(30L)).thenReturn(someoneElse);
 
-            assertThatThrownBy(() -> workflowService.reopenTicket(TICKET_ID, new ReopenTicketRequest(30L)))
+            assertThatThrownBy(() -> workflowService.reopenTicket(TICKET_ID, 30L))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Only the customer who opened this ticket can reopen it");
 
@@ -815,7 +809,7 @@ class TicketWorkflowServiceTest {
             when(userService.findOrThrow(CUSTOMER_ID)).thenReturn(customer);
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
-            TicketResponse response = workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(CUSTOMER_ID));
+            TicketResponse response = workflowService.closeTicket(TICKET_ID, CUSTOMER_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.CLOSED);
             assertThat(response.closedAt()).isEqualTo(NOW);
@@ -830,7 +824,7 @@ class TicketWorkflowServiceTest {
             givenResolvedTicket(NOW.minus(ADMIN_CLOSE_AFTER).plusMinutes(1));
             when(userService.findOrThrow(ADMIN_ID)).thenReturn(admin);
 
-            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(ADMIN_ID)))
+            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, ADMIN_ID))
                     .isInstanceOf(InvalidTicketStateException.class)
                     .hasMessage("The customer has 3 hours after resolution to close this ticket; "
                             + "an administrator can close it from 2026-09-14T12:01");
@@ -846,7 +840,7 @@ class TicketWorkflowServiceTest {
             when(userService.findOrThrow(ADMIN_ID)).thenReturn(admin);
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
-            TicketResponse response = workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(ADMIN_ID));
+            TicketResponse response = workflowService.closeTicket(TICKET_ID, ADMIN_ID);
 
             assertThat(response.status()).isEqualTo(TicketStatus.CLOSED);
             assertThat(response.closedAt()).isEqualTo(NOW);
@@ -859,7 +853,7 @@ class TicketWorkflowServiceTest {
             when(userService.findOrThrow(ADMIN_ID)).thenReturn(admin);
             when(ticketRepository.save(ticket)).thenReturn(ticket);
 
-            assertThat(workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(ADMIN_ID)).status())
+            assertThat(workflowService.closeTicket(TICKET_ID, ADMIN_ID).status())
                     .isEqualTo(TicketStatus.CLOSED);
         }
 
@@ -870,7 +864,7 @@ class TicketWorkflowServiceTest {
             givenResolvedTicket(NOW.minusDays(2));
             when(userService.findOrThrow(ADMIN_ID)).thenReturn(admin);
 
-            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(ADMIN_ID)))
+            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, ADMIN_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Only the ticket's customer or an administrator of its organization can close this ticket");
 
@@ -883,7 +877,7 @@ class TicketWorkflowServiceTest {
             givenResolvedTicket(NOW.minusDays(2));
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
 
-            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(AGENT_ID)))
+            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, AGENT_ID))
                     .isInstanceOf(ForbiddenOperationException.class);
 
             assertNothingSaved();
@@ -896,7 +890,7 @@ class TicketWorkflowServiceTest {
             givenResolvedTicket(NOW.minusDays(2));
             when(userService.findOrThrow(30L)).thenReturn(someoneElse);
 
-            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(30L)))
+            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, 30L))
                     .isInstanceOf(ForbiddenOperationException.class);
 
             assertNothingSaved();
@@ -909,7 +903,7 @@ class TicketWorkflowServiceTest {
             givenResolvedTicket(NOW);
             when(userService.findOrThrow(CUSTOMER_ID)).thenReturn(customer);
 
-            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(CUSTOMER_ID)))
+            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, CUSTOMER_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Inactive users cannot close tickets");
 
@@ -923,7 +917,7 @@ class TicketWorkflowServiceTest {
             givenResolvedTicket(NOW.minusDays(2));
             when(userService.findOrThrow(ADMIN_ID)).thenReturn(admin);
 
-            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(ADMIN_ID)))
+            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, ADMIN_ID))
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Inactive users cannot close tickets");
 
@@ -937,7 +931,7 @@ class TicketWorkflowServiceTest {
             when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
             when(userService.findOrThrow(CUSTOMER_ID)).thenReturn(customer);
 
-            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, new CloseTicketRequest(CUSTOMER_ID)))
+            assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, CUSTOMER_ID))
                     .isInstanceOf(InvalidTicketStateException.class)
                     .hasMessage("Cannot close a ticket with status " + status);
 

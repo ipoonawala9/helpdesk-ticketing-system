@@ -6,9 +6,9 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 /**
- * Fields a customer is allowed to supply when opening a ticket. Status,
- * priority, assigned agent, organization, ticket number, reopen count and all
- * timestamps are server-controlled and are deliberately absent.
+ * Fields a customer supplies when opening a ticket. The customer is the
+ * authenticated user; status, priority, assigned agent, organization, ticket
+ * number, reopen count and all timestamps are server-controlled.
  */
 public record CreateTicketRequest(
 
@@ -21,9 +21,6 @@ public record CreateTicketRequest(
         String description,
 
         @NotNull(message = "Category is required")
-        TicketCategory category,
-
-        @NotNull(message = "Customer id is required")
-        Long customerId
+        TicketCategory category
 ) {
 }

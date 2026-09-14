@@ -5,44 +5,57 @@ import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.InvalidTicketStateException;
 import com.ibrahim.helpdesk.exception.TicketNotFoundException;
 import com.ibrahim.helpdesk.organization.dto.OrganizationSummaryResponse;
-import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
+import com.ibrahim.helpdesk.security.config.SecurityConfig;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
-import com.ibrahim.helpdesk.ticket.dto.CloseTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
-import com.ibrahim.helpdesk.ticket.dto.ReopenTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
+import com.ibrahim.helpdesk.ticket.dto.UpdateTicketRequest;
 import com.ibrahim.helpdesk.ticket.entity.TicketCategory;
 import com.ibrahim.helpdesk.ticket.entity.TicketStatus;
 import com.ibrahim.helpdesk.ticket.service.TicketService;
 import com.ibrahim.helpdesk.ticket.service.TicketWorkflowService;
 import com.ibrahim.helpdesk.user.dto.UserSummaryResponse;
 import com.ibrahim.helpdesk.user.entity.UserRole;
+import com.ibrahim.helpdesk.user.repository.UserRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
+import static com.ibrahim.helpdesk.support.WebSliceSecurity.as;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(TicketController.class)
+@Import(SecurityConfig.class)
 class TicketControllerTest {
+
+    private static final long CUSTOMER = 1L;
+    private static final long ADMIN = 10L;
+    private static final long AGENT = 20L;
 
     @Autowired
     private MockMvc mockMvc;
@@ -53,352 +66,292 @@ class TicketControllerTest {
     @MockitoBean
     private TicketWorkflowService ticketWorkflowService;
 
-    private TicketResponse sampleResponse() {
+    /** Needed by SecurityConfig's beans; slice requests are pre-authenticated, so it is never queried. */
+    @MockitoBean
+    private UserRepository userRepository;
+
+    private static TicketResponse ticket(TicketStatus status) {
         return new TicketResponse(
                 42L, "HD-2026-000042", "Printer will not print", "It jams on every job",
-                TicketStatus.OPEN, null, TicketCategory.HARDWARE,
-                new UserSummaryResponse(1L, "Dana Customer", "dana@acme.test", UserRole.CUSTOMER),
-                null,
+                status, null, TicketCategory.HARDWARE,
+                new UserSummaryResponse(CUSTOMER, "Dana Customer", "dana@acme.test", UserRole.CUSTOMER),
+                status == TicketStatus.OPEN ? null
+                        : new UserSummaryResponse(AGENT, "Sam Agent", "sam@acme.test", UserRole.SUPPORT_AGENT),
                 new OrganizationSummaryResponse(7L, "Acme Ltd"),
                 0, LocalDateTime.now(), LocalDateTime.now(), null, null);
     }
 
-    @Test
-    @DisplayName("POST /api/tickets returns 201 and a ticket free of entity internals")
-    void createTicketReturnsCreated() throws Exception {
-        when(ticketService.createTicket(any(CreateTicketRequest.class))).thenReturn(sampleResponse());
+    // ----- authentication -----------------------------------------------------
 
-        mockMvc.perform(post("/api/tickets")
+    @Test
+    @DisplayName("a request without a token is a 401 in the standard error shape, with a Bearer challenge")
+    void noTokenIsUnauthorized() throws Exception {
+        mockMvc.perform(get("/api/tickets/42"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string(HttpHeaders.WWW_AUTHENTICATE, "Bearer"))
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.error").value("Unauthorized"))
+                .andExpect(jsonPath("$.message").value("Authentication is required"))
+                .andExpect(jsonPath("$.path").value("/api/tickets/42"));
+
+        verifyNoInteractions(ticketService);
+    }
+
+    @Test
+    @DisplayName("a malformed bearer token is a 401 marked invalid_token")
+    void garbageTokenIsUnauthorized() throws Exception {
+        mockMvc.perform(get("/api/tickets/42").header(HttpHeaders.AUTHORIZATION, "Bearer not-a-jwt"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string(HttpHeaders.WWW_AUTHENTICATE, "Bearer error=\"invalid_token\""))
+                .andExpect(jsonPath("$.message").value("Invalid or expired access token"));
+    }
+
+    // ----- role rules ---------------------------------------------------------
+
+    /**
+     * Every role that may NOT call an endpoint is refused before the service is
+     * reached. Allowed roles are exercised by the tests below.
+     */
+    @ParameterizedTest(name = "{0} {1} as {2} is forbidden")
+    @CsvSource({
+            "POST,   /api/tickets,             SUPPORT_AGENT",
+            "POST,   /api/tickets,             ORG_ADMIN",
+            "POST,   /api/tickets,             SUPER_ADMIN",
+            "GET,    /api/tickets,             CUSTOMER",
+            "GET,    /api/tickets,             SUPPORT_AGENT",
+            "GET,    /api/tickets,             ORG_ADMIN",
+            "PUT,    /api/tickets/42,          SUPPORT_AGENT",
+            "PUT,    /api/tickets/42,          ORG_ADMIN",
+            "DELETE, /api/tickets/42,          CUSTOMER",
+            "DELETE, /api/tickets/42,          SUPPORT_AGENT",
+            "POST,   /api/tickets/42/assign,   CUSTOMER",
+            "POST,   /api/tickets/42/assign,   SUPPORT_AGENT",
+            "POST,   /api/tickets/42/assign,   SUPER_ADMIN",
+            "POST,   /api/tickets/42/start,    CUSTOMER",
+            "POST,   /api/tickets/42/start,    ORG_ADMIN",
+            "POST,   /api/tickets/42/resolve,  CUSTOMER",
+            "POST,   /api/tickets/42/resolve,  ORG_ADMIN",
+            "POST,   /api/tickets/42/reopen,   SUPPORT_AGENT",
+            "POST,   /api/tickets/42/reopen,   ORG_ADMIN",
+            "POST,   /api/tickets/42/close,    SUPPORT_AGENT",
+            "POST,   /api/tickets/42/close,    SUPER_ADMIN"
+    })
+    void wrongRoleIsForbidden(String method, String path, UserRole role) throws Exception {
+        mockMvc.perform(request(HttpMethod.valueOf(method), path)
+                        .with(as(99L, role))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"title":"Printer will not print",
-                                 "description":"It jams on every job",
-                                 "category":"HARDWARE","customerId":1}
+                                {"title":"t","description":"d","category":"OTHER","agentId":20}
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.message").value("You do not have permission to perform this action"));
+
+        verifyNoInteractions(ticketService, ticketWorkflowService);
+    }
+
+    // ----- create, read, update, delete ---------------------------------------
+
+    @Test
+    @DisplayName("POST /api/tickets returns 201 and passes the authenticated customer's id to the service")
+    void createTicketReturnsCreated() throws Exception {
+        when(ticketService.createTicket(any(CreateTicketRequest.class), eq(CUSTOMER))).thenReturn(ticket(TicketStatus.OPEN));
+
+        mockMvc.perform(post("/api/tickets")
+                        .with(as(CUSTOMER, UserRole.CUSTOMER))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"Printer will not print","description":"It jams on every job","category":"HARDWARE"}
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.ticketNumber").value("HD-2026-000042"))
-                .andExpect(jsonPath("$.status").value("OPEN"))
                 .andExpect(jsonPath("$.assignedAgent").doesNotExist())
-                .andExpect(jsonPath("$.customer.email").value("dana@acme.test"))
                 .andExpect(jsonPath("$.customer.password").doesNotExist())
-                .andExpect(jsonPath("$.customer.organization").doesNotExist())
                 .andExpect(jsonPath("$.organization.companyEmail").doesNotExist());
+
+        verify(ticketService).createTicket(
+                new CreateTicketRequest("Printer will not print", "It jams on every job", TicketCategory.HARDWARE),
+                CUSTOMER);
     }
 
     @Test
     @DisplayName("POST /api/tickets rejects a blank body with 400 and per-field messages")
     void createTicketRejectsInvalidPayload() throws Exception {
         mockMvc.perform(post("/api/tickets")
+                        .with(as(CUSTOMER, UserRole.CUSTOMER))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"title":"  ","description":"","category":null,"customerId":null}
+                                {"title":"  ","description":"","category":null}
                                 """))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.message").value("Validation failed"))
-                .andExpect(jsonPath("$.path").value("/api/tickets"))
                 .andExpect(jsonPath("$.fieldErrors.title").value("Title is required"))
                 .andExpect(jsonPath("$.fieldErrors.description").value("Description is required"))
-                .andExpect(jsonPath("$.fieldErrors.category").value("Category is required"))
-                .andExpect(jsonPath("$.fieldErrors.customerId").value("Customer id is required"));
+                .andExpect(jsonPath("$.fieldErrors.category").value("Category is required"));
 
-        verify(ticketService, never()).createTicket(any(CreateTicketRequest.class));
+        verify(ticketService, never()).createTicket(any(), anyLong());
     }
 
     @Test
     @DisplayName("POST /api/tickets rejects an unknown category with 400 rather than 500")
     void createTicketRejectsUnknownCategory() throws Exception {
         mockMvc.perform(post("/api/tickets")
+                        .with(as(CUSTOMER, UserRole.CUSTOMER))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"title":"t","description":"d","category":"BANANA","customerId":1}
+                                {"title":"t","description":"d","category":"BANANA"}
                                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
     }
 
     @Test
-    @DisplayName("GET /api/tickets/{id} returns the standard error shape when missing")
-    void getTicketByIdReturnsNotFound() throws Exception {
-        when(ticketService.getTicketById(404L)).thenThrow(new TicketNotFoundException(404L));
+    @DisplayName("GET /api/tickets is available to a SUPER_ADMIN")
+    void listForSuperAdmin() throws Exception {
+        when(ticketService.getAllTickets()).thenReturn(List.of(ticket(TicketStatus.OPEN)));
 
-        mockMvc.perform(get("/api/tickets/404"))
+        mockMvc.perform(get("/api/tickets").with(as(100L, UserRole.SUPER_ADMIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value(42));
+    }
+
+    @Test
+    @DisplayName("GET /api/tickets/{id} passes the viewer's id and returns the standard 404 shape when missing")
+    void getTicketByIdReturnsNotFound() throws Exception {
+        when(ticketService.getTicketById(404L, AGENT)).thenThrow(new TicketNotFoundException(404L));
+
+        mockMvc.perform(get("/api/tickets/404").with(as(AGENT, UserRole.SUPPORT_AGENT)))
                 .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.status").value(404))
                 .andExpect(jsonPath("$.error").value("Not Found"))
                 .andExpect(jsonPath("$.message").value("Ticket with ID 404 not found"))
-                .andExpect(jsonPath("$.path").value("/api/tickets/404"))
                 .andExpect(jsonPath("$.fieldErrors").doesNotExist());
     }
 
     @Test
-    @DisplayName("DELETE /api/tickets/{id} returns 204 with no body")
-    void deleteTicketReturnsNoContent() throws Exception {
-        mockMvc.perform(delete("/api/tickets/42"))
-                .andExpect(status().isNoContent());
+    @DisplayName("PUT /api/tickets/{id} passes the editing customer's id")
+    void updateTicketPassesEditor() throws Exception {
+        when(ticketService.updateTicket(eq(42L), any(UpdateTicketRequest.class), eq(CUSTOMER)))
+                .thenReturn(ticket(TicketStatus.OPEN));
 
-        verify(ticketService).deleteTicket(eq(42L));
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/tickets/42")
+                        .with(as(CUSTOMER, UserRole.CUSTOMER))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"New","description":"New","category":"SOFTWARE"}
+                                """))
+                .andExpect(status().isOk());
+
+        verify(ticketService).updateTicket(42L, new UpdateTicketRequest("New", "New", TicketCategory.SOFTWARE), CUSTOMER);
     }
 
-    private static final String ASSIGN_BODY = """
-            {"agentId":20,"adminId":10}
-            """;
+    @Test
+    @DisplayName("DELETE /api/tickets/{id} returns 204 for an ORG_ADMIN and passes their id")
+    void deleteTicketReturnsNoContent() throws Exception {
+        mockMvc.perform(delete("/api/tickets/42").with(as(ADMIN, UserRole.ORG_ADMIN)))
+                .andExpect(status().isNoContent());
+
+        verify(ticketService).deleteTicket(42L, ADMIN);
+    }
+
+    // ----- workflow -------------------------------------------------------------
 
     @Test
-    @DisplayName("POST /api/tickets/{id}/assign returns 200 with the assigned ticket")
+    @DisplayName("POST /assign returns 200 and passes the admin's id with the agent from the body")
     void assignTicketReturnsOk() throws Exception {
-        TicketResponse assigned = new TicketResponse(
-                42L, "HD-2026-000042", "Printer will not print", "It jams on every job",
-                TicketStatus.ASSIGNED, null, TicketCategory.HARDWARE,
-                new UserSummaryResponse(1L, "Dana Customer", "dana@acme.test", UserRole.CUSTOMER),
-                new UserSummaryResponse(20L, "Sam Agent", "sam@acme.test", UserRole.SUPPORT_AGENT),
-                new OrganizationSummaryResponse(7L, "Acme Ltd"),
-                0, LocalDateTime.now(), LocalDateTime.now(), null, null);
-        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class))).thenReturn(assigned);
+        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class), eq(ADMIN)))
+                .thenReturn(ticket(TicketStatus.ASSIGNED));
 
         mockMvc.perform(post("/api/tickets/42/assign")
+                        .with(as(ADMIN, UserRole.ORG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(ASSIGN_BODY))
+                        .content("""
+                                {"agentId":20}
+                                """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ASSIGNED"))
                 .andExpect(jsonPath("$.assignedAgent.id").value(20))
-                .andExpect(jsonPath("$.assignedAgent.role").value("SUPPORT_AGENT"))
                 .andExpect(jsonPath("$.assignedAgent.password").doesNotExist());
 
-        verify(ticketWorkflowService).assignTicket(42L, new AssignTicketRequest(20L, 10L));
+        verify(ticketWorkflowService).assignTicket(42L, new AssignTicketRequest(20L), ADMIN);
     }
 
     @Test
-    @DisplayName("POST /api/tickets/{id}/assign validates that agentId and adminId are present")
+    @DisplayName("POST /assign requires agentId")
     void assignTicketValidatesBody() throws Exception {
         mockMvc.perform(post("/api/tickets/42/assign")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.fieldErrors.agentId").value("Agent id is required"))
-                .andExpect(jsonPath("$.fieldErrors.adminId").value("Admin id is required"));
-
-        verify(ticketWorkflowService, never()).assignTicket(anyLong(), any(AssignTicketRequest.class));
-    }
-
-    @Test
-    @DisplayName("POST /api/tickets/{id}/assign maps a forbidden actor to 403")
-    void assignTicketMapsForbiddenTo403() throws Exception {
-        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class)))
-                .thenThrow(new ForbiddenOperationException("Only organization administrators can assign tickets"));
-
-        mockMvc.perform(post("/api/tickets/42/assign")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(ASSIGN_BODY))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.error").value("Forbidden"))
-                .andExpect(jsonPath("$.message").value("Only organization administrators can assign tickets"))
-                .andExpect(jsonPath("$.path").value("/api/tickets/42/assign"));
-    }
-
-    @Test
-    @DisplayName("POST /api/tickets/{id}/assign maps a non-assignable status to 409")
-    void assignTicketMapsInvalidStateTo409() throws Exception {
-        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class)))
-                .thenThrow(new InvalidTicketStateException("assign", TicketStatus.CLOSED));
-
-        mockMvc.perform(post("/api/tickets/42/assign")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(ASSIGN_BODY))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.status").value(409))
-                .andExpect(jsonPath("$.error").value("Conflict"))
-                .andExpect(jsonPath("$.message").value("Cannot assign a ticket with status CLOSED"));
-    }
-
-    @Test
-    @DisplayName("POST /api/tickets/{id}/assign maps an invalid agent to 400")
-    void assignTicketMapsInvalidAgentTo400() throws Exception {
-        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class)))
-                .thenThrow(new BusinessRuleException("Agent must belong to the ticket's organization"));
-
-        mockMvc.perform(post("/api/tickets/42/assign")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(ASSIGN_BODY))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("Agent must belong to the ticket's organization"));
-    }
-
-    private static TicketResponse ticketWithStatus(TicketStatus status, LocalDateTime resolvedAt) {
-        return new TicketResponse(
-                42L, "HD-2026-000042", "Printer will not print", "It jams on every job",
-                status, null, TicketCategory.HARDWARE,
-                new UserSummaryResponse(1L, "Dana Customer", "dana@acme.test", UserRole.CUSTOMER),
-                new UserSummaryResponse(20L, "Sam Agent", "sam@acme.test", UserRole.SUPPORT_AGENT),
-                new OrganizationSummaryResponse(7L, "Acme Ltd"),
-                0, LocalDateTime.now(), LocalDateTime.now(), resolvedAt, null);
-    }
-
-    private static final String AGENT_BODY = """
-            {"agentId":20}
-            """;
-
-    @Test
-    @DisplayName("POST /api/tickets/{id}/start returns 200 with the IN_PROGRESS ticket")
-    void startWorkReturnsOk() throws Exception {
-        when(ticketWorkflowService.startWork(eq(42L), any(AgentActionRequest.class)))
-                .thenReturn(ticketWithStatus(TicketStatus.IN_PROGRESS, null));
-
-        mockMvc.perform(post("/api/tickets/42/start")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(AGENT_BODY))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("IN_PROGRESS"))
-                .andExpect(jsonPath("$.resolvedAt").doesNotExist());
-
-        verify(ticketWorkflowService).startWork(42L, new AgentActionRequest(20L));
-    }
-
-    @Test
-    @DisplayName("POST /api/tickets/{id}/resolve returns 200 with the RESOLVED ticket and resolvedAt")
-    void resolveReturnsOk() throws Exception {
-        when(ticketWorkflowService.resolveTicket(eq(42L), any(AgentActionRequest.class)))
-                .thenReturn(ticketWithStatus(TicketStatus.RESOLVED, LocalDateTime.now()));
-
-        mockMvc.perform(post("/api/tickets/42/resolve")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(AGENT_BODY))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("RESOLVED"))
-                .andExpect(jsonPath("$.resolvedAt").exists())
-                .andExpect(jsonPath("$.closedAt").doesNotExist());
-
-        verify(ticketWorkflowService).resolveTicket(42L, new AgentActionRequest(20L));
-    }
-
-    @ParameterizedTest(name = "POST /api/tickets/42/{0} requires agentId")
-    @ValueSource(strings = {"start", "resolve"})
-    void agentActionsValidateBody(String action) throws Exception {
-        mockMvc.perform(post("/api/tickets/42/" + action)
+                        .with(as(ADMIN, UserRole.ORG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors.agentId").value("Agent id is required"));
 
-        verify(ticketWorkflowService, never()).startWork(anyLong(), any(AgentActionRequest.class));
-        verify(ticketWorkflowService, never()).resolveTicket(anyLong(), any(AgentActionRequest.class));
+        verifyNoInteractions(ticketWorkflowService);
     }
 
     @Test
-    @DisplayName("POST /api/tickets/{id}/start maps a non-assigned caller to 403")
-    void startWorkMapsForbiddenTo403() throws Exception {
-        when(ticketWorkflowService.startWork(eq(42L), any(AgentActionRequest.class)))
-                .thenThrow(new ForbiddenOperationException("Only the assigned agent can start work on this ticket"));
+    @DisplayName("POST /assign maps service rejections to 403, 409 and 400")
+    void assignTicketMapsServiceErrors() throws Exception {
+        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class), eq(ADMIN)))
+                .thenThrow(new ForbiddenOperationException("Administrators can only assign tickets from their own organization"))
+                .thenThrow(new InvalidTicketStateException("assign", TicketStatus.CLOSED))
+                .thenThrow(new BusinessRuleException("Agent must belong to the ticket's organization"));
 
-        mockMvc.perform(post("/api/tickets/42/start")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(AGENT_BODY))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.message").value("Only the assigned agent can start work on this ticket"))
-                .andExpect(jsonPath("$.path").value("/api/tickets/42/start"));
+        var assign = post("/api/tickets/42/assign")
+                .with(as(ADMIN, UserRole.ORG_ADMIN))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"agentId":20}
+                        """);
+
+        mockMvc.perform(assign).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("Administrators can only assign tickets from their own organization"));
+        mockMvc.perform(assign).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Cannot assign a ticket with status CLOSED"));
+        mockMvc.perform(assign).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Agent must belong to the ticket's organization"));
     }
 
     @Test
-    @DisplayName("POST /api/tickets/{id}/resolve maps an invalid transition to 409")
-    void resolveMapsInvalidStateTo409() throws Exception {
-        when(ticketWorkflowService.resolveTicket(eq(42L), any(AgentActionRequest.class)))
-                .thenThrow(new InvalidTicketStateException("resolve", TicketStatus.ASSIGNED));
+    @DisplayName("start and resolve need no body and pass the agent's id")
+    void startAndResolve() throws Exception {
+        when(ticketWorkflowService.startWork(42L, AGENT)).thenReturn(ticket(TicketStatus.IN_PROGRESS));
+        when(ticketWorkflowService.resolveTicket(42L, AGENT)).thenReturn(ticket(TicketStatus.RESOLVED));
 
-        mockMvc.perform(post("/api/tickets/42/resolve")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(AGENT_BODY))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("Cannot resolve a ticket with status ASSIGNED"));
+        mockMvc.perform(post("/api/tickets/42/start").with(as(AGENT, UserRole.SUPPORT_AGENT)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+        mockMvc.perform(post("/api/tickets/42/resolve").with(as(AGENT, UserRole.SUPPORT_AGENT)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RESOLVED"));
     }
 
     @Test
-    @DisplayName("POST /api/tickets/{id}/reopen returns 200 with the REOPENED ticket")
-    void reopenReturnsOk() throws Exception {
-        when(ticketWorkflowService.reopenTicket(eq(42L), any(ReopenTicketRequest.class)))
-                .thenReturn(ticketWithStatus(TicketStatus.REOPENED, null));
+    @DisplayName("reopen passes the customer's id; close accepts both a customer and an org admin")
+    void reopenAndClose() throws Exception {
+        when(ticketWorkflowService.reopenTicket(42L, CUSTOMER)).thenReturn(ticket(TicketStatus.REOPENED));
+        when(ticketWorkflowService.closeTicket(eq(42L), anyLong())).thenReturn(ticket(TicketStatus.CLOSED));
 
-        mockMvc.perform(post("/api/tickets/42/reopen")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"customerId":1}
-                                """))
+        mockMvc.perform(post("/api/tickets/42/reopen").with(as(CUSTOMER, UserRole.CUSTOMER)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("REOPENED"));
+        mockMvc.perform(post("/api/tickets/42/close").with(as(CUSTOMER, UserRole.CUSTOMER)))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/tickets/42/close").with(as(ADMIN, UserRole.ORG_ADMIN)))
+                .andExpect(status().isOk());
 
-        verify(ticketWorkflowService).reopenTicket(42L, new ReopenTicketRequest(1L));
+        verify(ticketWorkflowService).closeTicket(42L, CUSTOMER);
+        verify(ticketWorkflowService).closeTicket(42L, ADMIN);
     }
 
     @Test
-    @DisplayName("POST /api/tickets/{id}/close returns 200 with the CLOSED ticket")
-    void closeReturnsOk() throws Exception {
-        when(ticketWorkflowService.closeTicket(eq(42L), any(CloseTicketRequest.class)))
-                .thenReturn(ticketWithStatus(TicketStatus.CLOSED, LocalDateTime.now()));
-
-        mockMvc.perform(post("/api/tickets/42/close")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"userId":1}
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("CLOSED"));
-
-        verify(ticketWorkflowService).closeTicket(42L, new CloseTicketRequest(1L));
-    }
-
-    @Test
-    @DisplayName("POST /api/tickets/{id}/reopen requires customerId")
-    void reopenValidatesBody() throws Exception {
-        mockMvc.perform(post("/api/tickets/42/reopen")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.fieldErrors.customerId").value("Customer id is required"));
-
-        verify(ticketWorkflowService, never()).reopenTicket(anyLong(), any(ReopenTicketRequest.class));
-    }
-
-    @Test
-    @DisplayName("POST /api/tickets/{id}/close requires userId")
-    void closeValidatesBody() throws Exception {
-        mockMvc.perform(post("/api/tickets/42/close")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.fieldErrors.userId").value("User id is required"));
-
-        verify(ticketWorkflowService, never()).closeTicket(anyLong(), any(CloseTicketRequest.class));
-    }
-
-    @Test
-    @DisplayName("POST /api/tickets/{id}/close maps an early admin close to 409 with the reason")
+    @DisplayName("an early admin close is reported as 409 with the reason")
     void closeMapsEarlyAdminCloseTo409() throws Exception {
         String reason = "The customer has 3 hours after resolution to close this ticket; "
                 + "an administrator can close it from 2026-09-14T15:00";
-        when(ticketWorkflowService.closeTicket(eq(42L), any(CloseTicketRequest.class)))
-                .thenThrow(new InvalidTicketStateException(reason));
+        when(ticketWorkflowService.closeTicket(42L, ADMIN)).thenThrow(new InvalidTicketStateException(reason));
 
-        mockMvc.perform(post("/api/tickets/42/close")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"userId":10}
-                                """))
+        mockMvc.perform(post("/api/tickets/42/close").with(as(ADMIN, UserRole.ORG_ADMIN)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value(reason));
-    }
-
-    @Test
-    @DisplayName("POST /api/tickets/{id}/reopen maps a non-customer caller to 403")
-    void reopenMapsForbiddenTo403() throws Exception {
-        when(ticketWorkflowService.reopenTicket(eq(42L), any(ReopenTicketRequest.class)))
-                .thenThrow(new ForbiddenOperationException("Only the customer who opened this ticket can reopen it"));
-
-        mockMvc.perform(post("/api/tickets/42/reopen")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"customerId":20}
-                                """))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.path").value("/api/tickets/42/reopen"));
     }
 }

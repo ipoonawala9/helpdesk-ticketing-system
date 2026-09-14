@@ -9,12 +9,13 @@ import jakarta.validation.constraints.Size;
 
 /**
  * Request payload for user creation. Only the fields a caller is allowed to
- * supply are present: the User entity is never bound directly, so id, active
- * and any future internal field cannot be mass-assigned.
+ * supply are present: the User entity is never bound directly, so id and active
+ * cannot be mass-assigned.
  *
- * <p>Role and organizationId are still accepted here because there is no
- * authentication yet; both become server-derived in the authentication and
- * tenant-isolation phases.
+ * <p>What the authenticated creator may ask for depends on their role: a
+ * SUPER_ADMIN may create any role in any organization, while an ORG_ADMIN may
+ * only create CUSTOMER and SUPPORT_AGENT accounts in their own organization,
+ * and can omit {@code organizationId}.
  */
 public record CreateUserRequest(
 

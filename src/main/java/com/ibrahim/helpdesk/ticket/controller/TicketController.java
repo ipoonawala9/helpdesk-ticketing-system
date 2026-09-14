@@ -1,10 +1,8 @@
 package com.ibrahim.helpdesk.ticket.controller;
 
-import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
+import com.ibrahim.helpdesk.security.auth.CurrentUserId;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
-import com.ibrahim.helpdesk.ticket.dto.CloseTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
-import com.ibrahim.helpdesk.ticket.dto.ReopenTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.dto.UpdateTicketRequest;
 import com.ibrahim.helpdesk.ticket.service.TicketService;
@@ -12,10 +10,16 @@ import com.ibrahim.helpdesk.ticket.service.TicketWorkflowService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+/**
+ * {@code @PreAuthorize} states which roles may call each endpoint. Whether the
+ * caller is the right user for this particular ticket, such as its customer or
+ * its assigned agent, is checked in the services.
+ */
 @RestController
 @RequestMapping("/api/tickets")
 @RequiredArgsConstructor
@@ -26,71 +30,74 @@ public class TicketController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public TicketResponse createTicket(@Valid @RequestBody CreateTicketRequest request) {
-        return ticketService.createTicket(request);
+    @PreAuthorize("hasRole('CUSTOMER')")
+    public TicketResponse createTicket(
+            @Valid @RequestBody CreateTicketRequest request,
+            @CurrentUserId Long currentUserId) {
+
+        return ticketService.createTicket(request, currentUserId);
     }
 
+    /** System-wide list; organization-scoped lists for other roles come with tenant isolation. */
     @GetMapping
+    @PreAuthorize("hasRole('SUPER_ADMIN')")
     public List<TicketResponse> getAllTickets() {
         return ticketService.getAllTickets();
     }
 
     @GetMapping("/{id}")
-    public TicketResponse getTicketById(@PathVariable Long id) {
-        return ticketService.getTicketById(id);
+    public TicketResponse getTicketById(@PathVariable Long id, @CurrentUserId Long currentUserId) {
+        return ticketService.getTicketById(id, currentUserId);
     }
 
     @PutMapping("/{id}")
+    @PreAuthorize("hasRole('CUSTOMER')")
     public TicketResponse updateTicket(
             @PathVariable Long id,
-            @Valid @RequestBody UpdateTicketRequest request) {
+            @Valid @RequestBody UpdateTicketRequest request,
+            @CurrentUserId Long currentUserId) {
 
-        return ticketService.updateTicket(id, request);
+        return ticketService.updateTicket(id, request, currentUserId);
     }
 
     @PostMapping("/{id}/assign")
+    @PreAuthorize("hasRole('ORG_ADMIN')")
     public TicketResponse assignTicket(
             @PathVariable Long id,
-            @Valid @RequestBody AssignTicketRequest request) {
+            @Valid @RequestBody AssignTicketRequest request,
+            @CurrentUserId Long currentUserId) {
 
-        return ticketWorkflowService.assignTicket(id, request);
+        return ticketWorkflowService.assignTicket(id, request, currentUserId);
     }
 
     @PostMapping("/{id}/start")
-    public TicketResponse startWork(
-            @PathVariable Long id,
-            @Valid @RequestBody AgentActionRequest request) {
-
-        return ticketWorkflowService.startWork(id, request);
+    @PreAuthorize("hasRole('SUPPORT_AGENT')")
+    public TicketResponse startWork(@PathVariable Long id, @CurrentUserId Long currentUserId) {
+        return ticketWorkflowService.startWork(id, currentUserId);
     }
 
     @PostMapping("/{id}/resolve")
-    public TicketResponse resolveTicket(
-            @PathVariable Long id,
-            @Valid @RequestBody AgentActionRequest request) {
-
-        return ticketWorkflowService.resolveTicket(id, request);
+    @PreAuthorize("hasRole('SUPPORT_AGENT')")
+    public TicketResponse resolveTicket(@PathVariable Long id, @CurrentUserId Long currentUserId) {
+        return ticketWorkflowService.resolveTicket(id, currentUserId);
     }
 
     @PostMapping("/{id}/reopen")
-    public TicketResponse reopenTicket(
-            @PathVariable Long id,
-            @Valid @RequestBody ReopenTicketRequest request) {
-
-        return ticketWorkflowService.reopenTicket(id, request);
+    @PreAuthorize("hasRole('CUSTOMER')")
+    public TicketResponse reopenTicket(@PathVariable Long id, @CurrentUserId Long currentUserId) {
+        return ticketWorkflowService.reopenTicket(id, currentUserId);
     }
 
     @PostMapping("/{id}/close")
-    public TicketResponse closeTicket(
-            @PathVariable Long id,
-            @Valid @RequestBody CloseTicketRequest request) {
-
-        return ticketWorkflowService.closeTicket(id, request);
+    @PreAuthorize("hasAnyRole('CUSTOMER', 'ORG_ADMIN')")
+    public TicketResponse closeTicket(@PathVariable Long id, @CurrentUserId Long currentUserId) {
+        return ticketWorkflowService.closeTicket(id, currentUserId);
     }
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void deleteTicket(@PathVariable Long id) {
-        ticketService.deleteTicket(id);
+    @PreAuthorize("hasRole('ORG_ADMIN')")
+    public void deleteTicket(@PathVariable Long id, @CurrentUserId Long currentUserId) {
+        ticketService.deleteTicket(id, currentUserId);
     }
 }

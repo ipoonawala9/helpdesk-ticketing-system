@@ -5,10 +5,7 @@ import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.InvalidTicketStateException;
 import com.ibrahim.helpdesk.organization.entity.Organization;
 import com.ibrahim.helpdesk.ticket.config.TicketWorkflowProperties;
-import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
-import com.ibrahim.helpdesk.ticket.dto.CloseTicketRequest;
-import com.ibrahim.helpdesk.ticket.dto.ReopenTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.entity.Ticket;
 import com.ibrahim.helpdesk.ticket.entity.TicketStatus;
@@ -71,13 +68,13 @@ public class TicketWorkflowService {
     private final TicketPriorityPolicy priorityPolicy;
 
     @Transactional
-    public TicketResponse assignTicket(Long ticketId, AssignTicketRequest request) {
+    public TicketResponse assignTicket(Long ticketId, AssignTicketRequest request, Long adminId) {
 
         Ticket ticket = ticketService.findOrThrow(ticketId);
 
         // Authorise the actor before looking at the agent, so a caller without
         // permission learns nothing about other users.
-        User admin = userService.findOrThrow(request.adminId());
+        User admin = userService.findOrThrow(adminId);
         requireOrgAdminOf(admin, ticket.getOrganization());
 
         requireStatus(ticket, ASSIGNABLE_STATUSES, "assign");
@@ -106,10 +103,10 @@ public class TicketWorkflowService {
      * ASSIGNED or REOPENED -> IN_PROGRESS.
      */
     @Transactional
-    public TicketResponse startWork(Long ticketId, AgentActionRequest request) {
+    public TicketResponse startWork(Long ticketId, Long agentId) {
 
         Ticket ticket = ticketService.findOrThrow(ticketId);
-        requireAssignedAgent(ticket, userService.findOrThrow(request.agentId()), "start work on");
+        requireAssignedAgent(ticket, userService.findOrThrow(agentId), "start work on");
         requireStatus(ticket, STARTABLE_STATUSES, "start work on");
 
         ticket.setStatus(TicketStatus.IN_PROGRESS);
@@ -123,10 +120,10 @@ public class TicketWorkflowService {
      * The ticket is not closed here; closure follows customer confirmation.
      */
     @Transactional
-    public TicketResponse resolveTicket(Long ticketId, AgentActionRequest request) {
+    public TicketResponse resolveTicket(Long ticketId, Long agentId) {
 
         Ticket ticket = ticketService.findOrThrow(ticketId);
-        requireAssignedAgent(ticket, userService.findOrThrow(request.agentId()), "resolve");
+        requireAssignedAgent(ticket, userService.findOrThrow(agentId), "resolve");
         requireStatus(ticket, EnumSet.of(TicketStatus.IN_PROGRESS), "resolve");
 
         LocalDateTime now = now();
@@ -147,10 +144,10 @@ public class TicketWorkflowService {
      * recalculated, since the reopen count feeds into it.
      */
     @Transactional
-    public TicketResponse reopenTicket(Long ticketId, ReopenTicketRequest request) {
+    public TicketResponse reopenTicket(Long ticketId, Long customerId) {
 
         Ticket ticket = ticketService.findOrThrow(ticketId);
-        User actor = userService.findOrThrow(request.customerId());
+        User actor = userService.findOrThrow(customerId);
 
         if (!TicketParticipants.isCustomer(ticket, actor)) {
             throw new ForbiddenOperationException("Only the customer who opened this ticket can reopen it");
@@ -185,10 +182,10 @@ public class TicketWorkflowService {
      * only once the customer has had the configured time to respond.
      */
     @Transactional
-    public TicketResponse closeTicket(Long ticketId, CloseTicketRequest request) {
+    public TicketResponse closeTicket(Long ticketId, Long userId) {
 
         Ticket ticket = ticketService.findOrThrow(ticketId);
-        User actor = userService.findOrThrow(request.userId());
+        User actor = userService.findOrThrow(userId);
 
         boolean isCustomer = TicketParticipants.isCustomer(ticket, actor);
         boolean isAdmin = TicketParticipants.isOrgAdmin(ticket, actor);

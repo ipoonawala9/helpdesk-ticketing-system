@@ -39,10 +39,10 @@ public class MessageService {
     private final Clock clock;
 
     @Transactional
-    public MessageResponse postMessage(Long ticketId, PostMessageRequest request) {
+    public MessageResponse postMessage(Long ticketId, PostMessageRequest request, Long senderId) {
 
         Ticket ticket = ticketService.findOrThrow(ticketId);
-        User sender = userService.findOrThrow(request.senderId());
+        User sender = userService.findOrThrow(senderId);
 
         if (!isCustomer(ticket, sender) && !isAssignedAgent(ticket, sender)) {
             throw new ForbiddenOperationException(

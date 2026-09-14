@@ -20,6 +20,7 @@ A RESTful backend API for managing support tickets across multiple organizations
   - [Message](#message)
 - [Enums](#enums)
 - [Automatic Priority](#automatic-priority)
+- [Authentication & Authorization](#authentication--authorization)
 - [API Reference](#api-reference)
   - [Organizations](#organizations-api)
   - [Users](#users-api)
@@ -61,6 +62,11 @@ Controllers never accept or return JPA entities. Every request is bound to a
 validated request record and every response is built by an explicit mapper, so
 passwords, Hibernate proxy fields and circular references cannot reach a client.
 
+Every request except login is authenticated with a JWT bearer token, and the
+acting user is always taken from that token, never from a request field. Each
+role can only do what its job needs, and rules that depend on a specific
+ticket, such as "only this ticket's customer", are enforced on the server.
+
 Ticket priority is always decided by the server from the ticket's category,
 wording and reopen count; clients cannot set it.
 
@@ -93,11 +99,12 @@ A reopened ticket goes back to its agent, who starts work on it again.
 | Persistence | Spring Data JPA (Hibernate) |
 | Database | PostgreSQL |
 | Validation | Jakarta Bean Validation |
+| Security | Spring Security 7, OAuth2 Resource Server (JWT, HS256), BCrypt |
 | Boilerplate reduction | Lombok |
 | API Docs | Postman |
 | Build tool | Maven (Maven Wrapper included) |
 | Containerization | Docker (eclipse-temurin:25-jdk) |
-| Testing | JUnit 5, Mockito, AssertJ, MockMvc, H2 (in-memory) |
+| Testing | JUnit 5, Mockito, AssertJ, MockMvc, Spring Security Test, H2 (in-memory) |
 
 ---
 
@@ -112,12 +119,27 @@ helpdesk-ticketing-system/
 │   │   │   ├── exception/
 │   │   │   │   ├── ApiErrorResponse.java         # single error shape
 │   │   │   │   ├── BusinessRuleException.java
+│   │   │   │   ├── EmailAlreadyInUseException.java
 │   │   │   │   ├── ForbiddenOperationException.java
 │   │   │   │   ├── GlobalExceptionHandler.java   # @RestControllerAdvice
 │   │   │   │   ├── InvalidTicketStateException.java
 │   │   │   │   ├── OrganizationNotFoundException.java
 │   │   │   │   ├── TicketNotFoundException.java
 │   │   │   │   └── UserNotFoundException.java
+│   │   │   ├── security/
+│   │   │   │   ├── auth/AuthController.java              # POST /api/auth/login, GET /api/auth/me
+│   │   │   │   ├── auth/AuthService.java
+│   │   │   │   ├── auth/CurrentUserId.java               # injects the authenticated user's id
+│   │   │   │   ├── auth/EmailUserDetailsService.java
+│   │   │   │   ├── auth/InvalidCredentialsException.java
+│   │   │   │   ├── bootstrap/BootstrapProperties.java
+│   │   │   │   ├── bootstrap/SecurityStartupTasks.java   # hashes legacy passwords, creates first super admin
+│   │   │   │   ├── config/SecurityConfig.java            # filter chain, JWT encoder/decoder, password encoder
+│   │   │   │   ├── dto/LoginRequest.java
+│   │   │   │   ├── dto/LoginResponse.java
+│   │   │   │   ├── jwt/DatabaseUserJwtAuthenticationConverter.java
+│   │   │   │   ├── jwt/JwtProperties.java
+│   │   │   │   └── jwt/JwtTokenService.java
 │   │   │   ├── message/
 │   │   │   │   ├── controller/MessageController.java
 │   │   │   │   ├── dto/MessageResponse.java
@@ -149,11 +171,8 @@ helpdesk-ticketing-system/
 │   │   │       ├── config/TicketWorkflowConfig.java      # Clock bean
 │   │   │       ├── config/TicketWorkflowProperties.java  # helpdesk.tickets.*
 │   │   │       ├── controller/TicketController.java
-│   │   │       ├── dto/AgentActionRequest.java
 │   │   │       ├── dto/AssignTicketRequest.java
-│   │   │       ├── dto/CloseTicketRequest.java
 │   │   │       ├── dto/CreateTicketRequest.java
-│   │   │       ├── dto/ReopenTicketRequest.java
 │   │   │       ├── dto/TicketResponse.java
 │   │   │       ├── dto/UpdateTicketRequest.java
 │   │   │       ├── entity/Ticket.java
@@ -173,8 +192,13 @@ helpdesk-ticketing-system/
 │   │       └── application.properties
 │   └── test/
 │       ├── java/com/ibrahim/helpdesk/
-│       │   ├── ApiIntegrationTestSupport.java     # shared end-to-end helpers
+│       │   ├── AccessControlIntegrationTest.java
+│       │   ├── ApiIntegrationTestSupport.java     # shared end-to-end helpers, real tokens per user
+│       │   ├── AuthIntegrationTest.java
 │       │   ├── MutableClock.java                  # test clock that can be advanced
+│       │   ├── SecurityStartupTasksIntegrationTest.java
+│       │   ├── security/jwt/JwtPropertiesTest.java
+│       │   ├── support/WebSliceSecurity.java      # authenticated requests in @WebMvcTest slices
 │       │   ├── HelpDeskApplicationTests.java
 │       │   ├── exception/FrameworkErrorMappingTest.java
 │       │   ├── message/controller/MessageControllerTest.java
@@ -226,7 +250,7 @@ Table: `users`
 | `id` | Long | PK, auto-generated | Unique identifier |
 | `name` | String | — | Full name |
 | `email` | String | — | Email address |
-| `password` | String | `@JsonIgnore` | Password (never returned in API responses) |
+| `password` | String | `@JsonIgnore` | BCrypt hash, stored as `{bcrypt}...`; never the password itself and never returned |
 | `phoneNumber` | String | — | Contact number |
 | `role` | UserRole (enum) | — | Role within the system |
 | `organization` | Organization | `@ManyToOne` | The org this user belongs to |
@@ -367,17 +391,144 @@ Design notes:
 
 ---
 
+## Authentication & Authorization
+
+### Logging in
+
+```
+POST /api/auth/login
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "dana@acme.com",
+  "password": "correct-horse"
+}
+```
+
+Response `200 OK`:
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
+  "tokenType": "Bearer",
+  "expiresAt": "2026-09-14T13:00:00Z",
+  "user": {
+    "id": 1,
+    "name": "Dana Customer",
+    "email": "dana@acme.com",
+    "phoneNumber": null,
+    "role": "CUSTOMER",
+    "active": true,
+    "organization": { "id": 1, "name": "Acme Corp" }
+  }
+}
+```
+
+Send the token on every other request:
+
+```
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
+```
+
+`GET /api/auth/me` returns the authenticated user's own profile.
+
+- Email matching ignores letter case and surrounding spaces.
+- A wrong password, an unknown email and an inactive account all return the
+  same `401` with `Invalid email or password`, so the response does not reveal
+  which emails have accounts. A password hash comparison runs even for unknown
+  emails, so response time does not reveal it either.
+- Tokens are valid for 1 hour. There is no refresh token; the client logs in
+  again.
+
+### How tokens are checked
+
+Tokens are HS256-signed JWTs issued by this API. A token carries only the
+issuer, the user's id as its subject, and its issue and expiry times: no role,
+email or other personal data.
+
+On every request the server verifies the signature, expiry and issuer, then
+**loads the user from the database**. The request is rejected with `401` if
+the user no longer exists or is inactive, and the user's authorities come from
+their current role in the database rather than from the token. Deactivating a
+user or changing their role therefore applies to their very next request, even
+with a token issued earlier.
+
+| Problem | Response |
+|---|---|
+| No `Authorization` header | `401`, `Authentication is required`, `WWW-Authenticate: Bearer` |
+| Malformed, expired, wrongly signed, wrong issuer or unsigned token, or a token for a deleted or inactive user | `401`, `Invalid or expired access token`, `WWW-Authenticate: Bearer error="invalid_token"` |
+| Valid token, but the role may not use the endpoint | `403`, `You do not have permission to perform this action` |
+| Valid token and role, but not the right user for this ticket or organization | `403` with a specific reason, e.g. `Only the customer who opened this ticket can edit it` |
+
+### Who can do what
+
+The acting user is **always** the authenticated user. No request body or query
+parameter identifies who is acting; such a field, if sent, is ignored.
+
+| Endpoint | Allowed roles | Additional rule |
+|---|---|---|
+| `POST /api/auth/login` | anyone | |
+| `GET /api/auth/me` | any authenticated user | |
+| `POST /api/organizations` | `SUPER_ADMIN` | |
+| `GET /api/organizations` | `SUPER_ADMIN` | |
+| `GET /api/organizations/{id}` | any | `SUPER_ADMIN`, or a member of that organization |
+| `POST /api/users` | `SUPER_ADMIN`, `ORG_ADMIN` | `ORG_ADMIN`: only `CUSTOMER` and `SUPPORT_AGENT`, only in their own organization |
+| `GET /api/users/{id}` | any | yourself, `SUPER_ADMIN`, or an `ORG_ADMIN` of the user's organization |
+| `POST /api/tickets` | `CUSTOMER` | the ticket belongs to the authenticated customer |
+| `GET /api/tickets` | `SUPER_ADMIN` | organization-scoped lists for other roles are planned |
+| `GET /api/tickets/{id}` | any | the ticket's customer, its assigned agent, an `ORG_ADMIN` of its organization, or `SUPER_ADMIN` |
+| `PUT /api/tickets/{id}` | `CUSTOMER` | the ticket's own customer |
+| `DELETE /api/tickets/{id}` | `ORG_ADMIN` | of the ticket's organization |
+| `POST /api/tickets/{id}/assign` | `ORG_ADMIN` | of the ticket's organization |
+| `POST /api/tickets/{id}/start`, `/resolve` | `SUPPORT_AGENT` | the ticket's assigned agent |
+| `POST /api/tickets/{id}/reopen` | `CUSTOMER` | the ticket's own customer |
+| `POST /api/tickets/{id}/close` | `CUSTOMER`, `ORG_ADMIN` | the ticket's customer, or an admin of its organization after 3 hours |
+| `POST /api/tickets/{id}/messages` | `CUSTOMER`, `SUPPORT_AGENT` | the ticket's customer or assigned agent |
+| `GET /api/tickets/{id}/messages` | `CUSTOMER`, `SUPPORT_AGENT`, `ORG_ADMIN` | the ticket's customer, assigned agent, or an admin of its organization |
+| `/v3/api-docs`, `/swagger-ui/**` | anyone | |
+
+Role checks are declared with `@PreAuthorize` on each controller method.
+Rules that depend on the specific ticket, user or organization are enforced in
+the services.
+
+There is no public sign-up: a `SUPER_ADMIN` creates organizations and their
+`ORG_ADMIN`s, and each `ORG_ADMIN` creates their organization's agents and
+customers.
+
+### The first super admin
+
+On startup, if `BOOTSTRAP_SUPER_ADMIN_EMAIL` and
+`BOOTSTRAP_SUPER_ADMIN_PASSWORD` are set and no account with that email exists,
+a `SUPER_ADMIN` is created with them. An existing account is never modified,
+so the variables can stay set. If they are not set and no `SUPER_ADMIN` exists,
+a warning is logged, since nobody would be able to create organizations.
+
+### Passwords
+
+Passwords are hashed with BCrypt through Spring Security's delegating encoder
+and stored as `{bcrypt}...`, so the algorithm can be upgraded later without
+invalidating existing passwords. On startup, any password still stored as plain
+text, from before hashing was introduced, is hashed in place; those users log
+in with the same password as before.
+
+---
+
 ## API Reference
 
 Base URL: `https://helpdesk-ticketing-system-mi7f.onrender.com`
 
-API tested via Postman.
+Every endpoint below except login requires `Authorization: Bearer <token>`.
+See [Authentication & Authorization](#authentication--authorization) for which
+roles may call each one.
 
 ---
 
 ### Organizations API
 
 #### Create Organization
+
+`SUPER_ADMIN` only.
 
 ```
 POST /api/organizations
@@ -411,6 +562,8 @@ Response `201 Created`:
 
 #### List Organizations
 
+`SUPER_ADMIN` only.
+
 ```
 GET /api/organizations
 ```
@@ -420,6 +573,8 @@ Response `200 OK`: array of organization objects.
 ---
 
 #### Get Organization by ID
+
+A `SUPER_ADMIN`, or any member of the organization. Anyone else gets `403`.
 
 ```
 GET /api/organizations/{id}
@@ -470,12 +625,18 @@ Request body:
 }
 ```
 
+- A `SUPER_ADMIN` can create any role. `organizationId` is required for every
+  role except `SUPER_ADMIN`, and an unknown organization is a `404`.
+- An `ORG_ADMIN` can only create `CUSTOMER` and `SUPPORT_AGENT` accounts, and
+  always in their own organization. They may omit `organizationId`; naming a
+  different organization, or asking for an admin role, is a `403`.
+- Agents and customers cannot create users (`403`).
+- The email is stored trimmed and lower-case and must not already belong to an
+  account, in any letter case; a duplicate is a `409`.
 - The request is bound to `CreateUserRequest`, not to the `User` entity, so `id`
   and `active` cannot be set by the caller. New users are always created active.
-- `organizationId` is resolved from the database. If not found, returns `404`.
-- `organizationId` is required for every role except `SUPER_ADMIN`.
-- `password` is stored but is not a field on any response type, so it can never
-  be returned.
+- The password is stored only as a BCrypt hash and is not a field on any
+  response type.
 
 Response `201 Created`:
 ```json
@@ -512,6 +673,9 @@ Response `404 Not Found` (if org not found):
 GET /api/users/{id}
 ```
 
+Allowed for the user themselves, a `SUPER_ADMIN`, or an `ORG_ADMIN` of the
+user's organization; anyone else gets `403`.
+
 Response `200 OK`: single user object in the shape above.
 
 Response `404 Not Found` if the user does not exist.
@@ -532,13 +696,12 @@ Request body:
 {
   "title": "Cannot login to dashboard",
   "description": "Getting a 403 error when trying to log in since this morning.",
-  "category": "ACCOUNT",
-  "customerId": 1
+  "category": "ACCOUNT"
 }
 ```
 
-Behavior on creation:
-- Customer is looked up by `customerId`
+`CUSTOMER` only. Behavior on creation:
+- The customer is the authenticated user
 - Organization is auto-inherited from the customer
 - Status is set to `OPEN`
 - `assignedAgent` is set to `null`
@@ -554,7 +717,7 @@ Response `201 Created`:
   "title": "Cannot login to dashboard",
   "description": "Getting a 403 error when trying to log in since this morning.",
   "status": "OPEN",
-  "priority": null,
+  "priority": "MEDIUM",
   "category": "ACCOUNT",
   "customer": {
     "id": 1,
@@ -579,16 +742,7 @@ The customer, assigned agent and organization are flattened into summary
 objects. A ticket response never contains a password, a Hibernate proxy field
 such as `hibernateLazyInitializer`, or a path back to another ticket.
 
-Response `404 Not Found` (if customer not found):
-```json
-{
-  "timestamp": "2026-06-18T15:00:00",
-  "status": 404,
-  "error": "Not Found",
-  "message": "User with ID 99 not found",
-  "path": "/api/tickets"
-}
-```
+Response `403 Forbidden` if the authenticated user is not a `CUSTOMER`.
 
 ---
 
@@ -597,6 +751,9 @@ Response `404 Not Found` (if customer not found):
 ```
 GET /api/tickets
 ```
+
+`SUPER_ADMIN` only, for now. Organization-scoped lists for the other roles
+arrive with tenant isolation.
 
 Response `200 OK`: Array of all ticket objects.
 
@@ -607,6 +764,10 @@ Response `200 OK`: Array of all ticket objects.
 ```
 GET /api/tickets/{id}
 ```
+
+Allowed for the ticket's customer, its current assigned agent, an `ORG_ADMIN`
+of its organization, and a `SUPER_ADMIN`. Anyone else gets `403`
+(`You do not have access to this ticket`).
 
 Response `200 OK`: Single ticket object.
 
@@ -642,6 +803,7 @@ Request body:
 - Updates `title`, `description`, `category`
 - Automatically updates `updatedAt` to current timestamp
 
+Only the customer who opened the ticket can edit it; anyone else gets `403`.
 Only these three fields can be changed. Status, priority, assignment,
 organization, ticket number, reopen count and the resolution and closure
 timestamps are server-controlled and are not editable through this endpoint.
@@ -662,31 +824,23 @@ Content-Type: application/json
 Request body:
 ```json
 {
-  "agentId": 3,
-  "adminId": 2
+  "agentId": 3
 }
 ```
 
 An organization administrator assigns the ticket to a support agent. On
 success the ticket's `assignedAgent` is set, `status` becomes `ASSIGNED` and
-`updatedAt` is refreshed.
-
-> **Interim identity:** `adminId` identifies the acting administrator only
-> because authentication does not exist yet. Every rule below is enforced
-> against that user, but the caller's claim to *be* that user is not verified.
-> Once authentication is added the acting user will come from the security
-> context and `adminId` will be removed from the request.
+`updatedAt` is refreshed. The administrator is the authenticated user.
 
 Rules, checked in this order:
 
 | # | Rule | Failure |
 |---|---|---|
 | 1 | Ticket exists | `404 Not Found` |
-| 2 | Admin exists | `404 Not Found` |
-| 3 | Admin has role `ORG_ADMIN`, is active, and belongs to the ticket's organization | `403 Forbidden` |
-| 4 | Ticket status is `OPEN`, `ASSIGNED`, `IN_PROGRESS` or `REOPENED` | `409 Conflict` |
-| 5 | Agent exists | `404 Not Found` |
-| 6 | Agent has role `SUPPORT_AGENT`, is active, and belongs to the ticket's organization | `400 Bad Request` |
+| 2 | The authenticated user has role `ORG_ADMIN`, is active, and belongs to the ticket's organization | `403 Forbidden` |
+| 3 | Ticket status is `OPEN`, `ASSIGNED`, `IN_PROGRESS` or `REOPENED` | `409 Conflict` |
+| 4 | Agent exists | `404 Not Found` |
+| 5 | Agent has role `SUPPORT_AGENT`, is active, and belongs to the ticket's organization | `400 Bad Request` |
 
 The admin is authorised before the agent is looked up, so a caller without
 permission learns nothing about other users.
@@ -725,15 +879,9 @@ Response `200 OK`: the updated ticket.
 
 ```
 POST /api/tickets/{id}/start
-Content-Type: application/json
 ```
 
-Request body:
-```json
-{
-  "agentId": 3
-}
-```
+No request body. The agent is the authenticated user.
 
 The assigned agent begins working on the ticket. `status` moves from
 `ASSIGNED` to `IN_PROGRESS` and `updatedAt` is refreshed.
@@ -742,37 +890,26 @@ The assigned agent begins working on the ticket. `status` moves from
 
 ```
 POST /api/tickets/{id}/resolve
-Content-Type: application/json
 ```
 
-Request body:
-```json
-{
-  "agentId": 3
-}
-```
+No request body. The agent is the authenticated user.
 
 The assigned agent marks the issue as fixed. `status` moves from `IN_PROGRESS`
 to `RESOLVED`, and `resolvedAt` and `updatedAt` are set to the same timestamp.
 The ticket is **not** closed; `closedAt` stays `null` until closure.
-
-> **Interim identity:** as with `adminId`, `agentId` identifies the acting
-> agent only until authentication exists. The rules are enforced against that
-> user, but the claim to be that user is not verified.
 
 Rules for both actions, checked in this order:
 
 | # | Rule | Failure |
 |---|---|---|
 | 1 | Ticket exists | `404 Not Found` |
-| 2 | Acting user exists | `404 Not Found` |
-| 3 | Acting user is the ticket's current `assignedAgent`, still has role `SUPPORT_AGENT`, and is active | `403 Forbidden` |
-| 4 | Ticket is `ASSIGNED` or `REOPENED` (start), or `IN_PROGRESS` (resolve) | `409 Conflict` |
+| 2 | The authenticated user is the ticket's current `assignedAgent` and has role `SUPPORT_AGENT` | `403 Forbidden` |
+| 3 | Ticket is `ASSIGNED` or `REOPENED` (start), or `IN_PROGRESS` (resolve) | `409 Conflict` |
 
 Notes:
-- Role and active flag are re-checked on every action, because either may
+- Role and active flag are re-checked on every request, because either may
   have changed since the ticket was assigned.
-- An unassigned ticket fails rule 3, so nobody can start it.
+- An unassigned ticket fails rule 2, so nobody can start it.
 - Repeating a transition, such as starting an `IN_PROGRESS` ticket or resolving
   a `RESOLVED` one, is a `409`, not a silent success. A repeated resolve never
   overwrites the original `resolvedAt`.
@@ -789,15 +926,9 @@ Response `200 OK`: the updated ticket.
 
 ```
 POST /api/tickets/{id}/close
-Content-Type: application/json
 ```
 
-Request body:
-```json
-{
-  "userId": 1
-}
-```
+No request body. The closing user is the authenticated user.
 
 Closes a resolved ticket. `status` becomes `CLOSED`, and `closedAt` and
 `updatedAt` are set. `resolvedAt` is kept.
@@ -814,11 +945,9 @@ Rules, checked in this order:
 | # | Rule | Failure |
 |---|---|---|
 | 1 | Ticket exists | `404 Not Found` |
-| 2 | Acting user exists | `404 Not Found` |
-| 3 | Acting user is the ticket's customer, or an `ORG_ADMIN` of its organization | `403 Forbidden` |
-| 4 | Acting user is active | `403 Forbidden` |
-| 5 | Ticket is `RESOLVED` | `409 Conflict` |
-| 6 | If an admin: at least 3 hours have passed since `resolvedAt` | `409 Conflict` |
+| 2 | The authenticated user is the ticket's customer, or an `ORG_ADMIN` of its organization | `403 Forbidden` |
+| 3 | Ticket is `RESOLVED` | `409 Conflict` |
+| 4 | If an admin: at least 3 hours have passed since `resolvedAt` | `409 Conflict` |
 
 The assigned agent cannot close a ticket they resolved.
 
@@ -838,15 +967,9 @@ Early admin close:
 
 ```
 POST /api/tickets/{id}/reopen
-Content-Type: application/json
 ```
 
-Request body:
-```json
-{
-  "customerId": 1
-}
-```
+No request body. The customer is the authenticated user.
 
 The customer reports that the issue is not actually fixed. `status` becomes
 `REOPENED`, `reopenCount` goes up by one and `updatedAt` is refreshed.
@@ -861,16 +984,11 @@ Rules, checked in this order:
 | # | Rule | Failure |
 |---|---|---|
 | 1 | Ticket exists | `404 Not Found` |
-| 2 | Acting user exists | `404 Not Found` |
-| 3 | Acting user is the ticket's customer | `403 Forbidden` |
-| 4 | Acting user is active | `403 Forbidden` |
-| 5 | Ticket is `RESOLVED` or `CLOSED` | `409 Conflict` |
-| 6 | If `CLOSED`: no more than 7 days have passed since `closedAt` | `409 Conflict` |
+| 2 | The authenticated user is the ticket's customer | `403 Forbidden` |
+| 3 | Ticket is `RESOLVED` or `CLOSED` | `409 Conflict` |
+| 4 | If `CLOSED`: no more than 7 days have passed since `closedAt` | `409 Conflict` |
 
 After the reopen window the customer is asked to open a new ticket instead.
-
-> **Interim identity:** `userId` and `customerId` identify the acting user
-> only until authentication exists, like `adminId` and `agentId`.
 
 Response `200 OK`: the updated ticket.
 
@@ -881,6 +999,8 @@ Response `200 OK`: the updated ticket.
 ```
 DELETE /api/tickets/{id}
 ```
+
+`ORG_ADMIN` of the ticket's organization only.
 
 Response `204 No Content`: no body. The ticket's messages are deleted with it.
 
@@ -914,10 +1034,11 @@ Content-Type: application/json
 Request body:
 ```json
 {
-  "senderId": 1,
   "content": "The printer shows error 50.4 after the paper jam."
 }
 ```
+
+The sender is the authenticated user.
 
 Response `201 Created`:
 ```json
@@ -944,15 +1065,15 @@ Response `201 Created`:
 
 | Failure | Status |
 |---|---|
-| Missing `senderId`, blank content, or content over 5000 characters | `400 Bad Request` |
-| Unknown ticket or sender | `404 Not Found` |
+| Blank content, or content over 5000 characters | `400 Bad Request` |
+| Unknown ticket | `404 Not Found` |
 | Sender is not the ticket's customer or current assigned agent, or is inactive | `403 Forbidden` |
 | Ticket is `CLOSED` | `409 Conflict` |
 
 #### Get Messages
 
 ```
-GET /api/tickets/{ticketId}/messages?userId=1
+GET /api/tickets/{ticketId}/messages
 ```
 
 Returns the conversation oldest first. A `CLOSED` ticket's conversation stays
@@ -963,13 +1084,8 @@ reading a thread does not grow with the number of participants.
 
 | Failure | Status |
 |---|---|
-| Missing `userId` | `400 Bad Request` |
-| Unknown ticket or user | `404 Not Found` |
+| Unknown ticket | `404 Not Found` |
 | User may not read this ticket's messages, or is inactive | `403 Forbidden` |
-
-> **Interim identity:** `senderId` and `userId` identify the acting user only
-> until authentication exists. The rules are enforced against that user, but
-> the claim to be that user is not verified.
 
 ---
 
@@ -981,6 +1097,13 @@ hand-written mappers (`OrganizationMapper`, `UserMapper`, `TicketMapper`), so
 adding a field to an entity can never silently widen an API response.
 
 ### Request DTOs
+
+#### LoginRequest
+
+| Field | Type | Constraints |
+|---|---|---|
+| `email` | String | required |
+| `password` | String | required |
 
 #### CreateOrganizationRequest
 
@@ -1000,7 +1123,7 @@ adding a field to an entity can never silently widen an API response.
 | `password` | String | required, 8 to 100 characters |
 | `phoneNumber` | String | optional, 7 to 20 characters |
 | `role` | UserRole | required |
-| `organizationId` | Long | required for every role except `SUPER_ADMIN` |
+| `organizationId` | Long | `SUPER_ADMIN` creator: required except for a new `SUPER_ADMIN`. `ORG_ADMIN` creator: optional, must be their own |
 
 #### CreateTicketRequest
 
@@ -1009,41 +1132,18 @@ adding a field to an entity can never silently widen an API response.
 | `title` | String | required, max 200 |
 | `description` | String | required, max 5000 |
 | `category` | TicketCategory | required |
-| `customerId` | Long | required |
 
 #### AssignTicketRequest
 
 | Field | Type | Constraints |
 |---|---|---|
 | `agentId` | Long | required |
-| `adminId` | Long | required; interim until authentication |
-
-#### CloseTicketRequest
-
-| Field | Type | Constraints |
-|---|---|---|
-| `userId` | Long | required; the ticket's customer or an org admin; interim until authentication |
-
-#### ReopenTicketRequest
-
-| Field | Type | Constraints |
-|---|---|---|
-| `customerId` | Long | required; interim until authentication |
 
 #### PostMessageRequest
 
 | Field | Type | Constraints |
 |---|---|---|
-| `senderId` | Long | required; interim until authentication |
 | `content` | String | required, not blank, max 5000 |
-
-#### AgentActionRequest
-
-Used by `start` and `resolve`.
-
-| Field | Type | Constraints |
-|---|---|---|
-| `agentId` | Long | required; interim until authentication |
 
 #### UpdateTicketRequest
 
@@ -1062,6 +1162,7 @@ Used by `start` and `resolve`.
 | `UserResponse` | `id`, `name`, `email`, `phoneNumber`, `role`, `active`, `organization` |
 | `UserSummaryResponse` | `id`, `name`, `email`, `role` — used when nested in another response |
 | `TicketResponse` | all ticket fields, with `customer`, `assignedAgent` and `organization` as summaries |
+| `LoginResponse` | `accessToken`, `tokenType` (`Bearer`), `expiresAt`, `user` (`UserResponse`) |
 | `MessageResponse` | `id`, `ticketId`, `sender` (summary, or `null`), `content`, `createdAt` |
 
 `password` is not a component of any response record, so it cannot be
@@ -1091,6 +1192,11 @@ shape, so a client only ever has to parse one structure:
 | `UserNotFoundException` | `404 Not Found` | `User with ID X not found` |
 | `TicketNotFoundException` | `404 Not Found` | `Ticket with ID X not found` |
 | `BusinessRuleException` | `400 Bad Request` | the rule that was violated |
+| `InvalidCredentialsException` | `401 Unauthorized` | `Invalid email or password` |
+| Spring Security `AuthenticationException` | `401 Unauthorized` | `Authentication is required`, or `Invalid or expired access token` |
+| Spring Security `AccessDeniedException` | `403 Forbidden` | `You do not have permission to perform this action` |
+| `EmailAlreadyInUseException` | `409 Conflict` | `An account with this email already exists` |
+| `DataIntegrityViolationException` | `409 Conflict` | `The request conflicts with existing data` |
 | `ForbiddenOperationException` | `403 Forbidden` | why the acting user may not do this |
 | `InvalidTicketStateException` | `409 Conflict` | e.g. `Cannot resolve a ticket with status ASSIGNED`, or a time window that has not opened or has expired |
 | `MethodArgumentNotValidException` | `400 Bad Request` | `Validation failed`, plus `fieldErrors` |
@@ -1140,14 +1246,18 @@ needs neither a live database nor any environment variables:
 | Test | Kind | Covers |
 |---|---|---|
 | `TicketServiceTest` | unit (Mockito) | organization derived from the customer, server-controlled fields on create, ticket number generation, update touching only title/description/category |
-| `UserServiceTest` | unit (Mockito) | organization resolution, `SUPER_ADMIN` without an organization, rejection of an organization-scoped role with no organization, no password on the response record |
+| `UserServiceTest` | unit (Mockito) | BCrypt hashing, email normalisation and uniqueness; what a `SUPER_ADMIN` and an `ORG_ADMIN` may each create, including refusal of admin roles and other organizations for `ORG_ADMIN`; non-admins refused; who may view a user |
 | `TicketWorkflowServiceTest` | unit (Mockito) | every assignment rule: valid assignment and reassignment, idempotent same-agent assign, each non-admin role, inactive and cross-organization admin, each non-agent role, inactive and cross-organization agent, each non-assignable status, and that nothing is saved on any rejection; start and resolve by the assigned agent, refusal of every other actor (other agent, admin, customer, unassigned ticket, deactivated agent, changed role), every invalid source status, and `resolvedAt` handling; reassigning `IN_PROGRESS` tickets back to `ASSIGNED` without undoing same-agent progress; reassigning and restarting `REOPENED` tickets; reopen and close by every allowed and refused actor, every invalid status, reopen-window and admin-close-window boundaries against a fixed clock |
 | `TicketWorkflowPropertiesTest` | unit (Spring `Binder`) | `helpdesk.tickets.*` defaults, overrides from environment variables named as documented, rejection of negative windows |
 | `FrameworkErrorMappingTest` | web slice (`@WebMvcTest`) | unknown URL, unsupported method and unsupported content type keep their real `404`/`405`/`415` status in the standard error shape, without leaking class names |
 | `MessageServiceTest` | unit (Mockito) | posting by customer and assigned agent, trimming, posting on an unassigned ticket, posting allowed in every status except `CLOSED`; admin, unassigned agent, other customer and inactive users refused; reading by customer, agent and admin, refusal of unrelated and cross-organization users, closed threads readable, deleted senders mapped to `null` |
-| `MessageControllerTest` | web slice (`@WebMvcTest`) | `201` and `200` responses, validation of sender and content, missing `userId` as `400`, `403` and `409` mapping |
+| `MessageControllerTest` | web slice (`@WebMvcTest`) | `201` and `200` responses, validation of content, sender taken from the token rather than the body, role rules, `403` and `409` mapping |
 | `RuleBasedTicketPriorityPolicyTest` | unit | every category baseline; every incident, urgency, low-urgency and calm phrase in the lists; precedence between them; whole-word, case-insensitive and typographic-apostrophe matching; the documented negation limitation; reopen escalation and its `HIGH` ceiling; determinism and null safety |
-| `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assign, start, resolve, close and reopen mapped to `200`/`400`/`403`/`409` |
+| `TicketControllerTest` | web slice (`@WebMvcTest` with the real `SecurityConfig`) | `401` without or with a malformed token; every role refused by every endpoint's `@PreAuthorize`; the authenticated user's id passed to the services; status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assign, start, resolve, close and reopen mapped to `200`/`400`/`403`/`409` |
+| `AuthIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | login success and the token's minimal claims; case-insensitive email; identical `401` for wrong password, unknown email and inactive account; hashed passwords at rest; rejection of missing, expired, forged-signature, wrong-issuer and unsigned tokens; deactivation and role changes applying to existing tokens immediately; bootstrap super admin login; public API docs |
+| `AccessControlIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | creating users as each role, within and across organizations, duplicate emails; organization and user visibility; reading, editing, deleting and listing tickets as each kind of user |
+| `SecurityStartupTasksIntegrationTest` | end-to-end (`@SpringBootTest`) | plain-text passwords hashed on startup with login still working and a second run changing nothing; bootstrap super admin never overwritten |
+| `JwtPropertiesTest` | unit | refusal to start without a signing secret, with one under 32 bytes, or with a non-positive token lifetime |
 | `TicketApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full organization to user to ticket flow through the real web, service and persistence layers, asserting no `password` or `hibernateLazyInitializer` anywhere in the payload |
 | `TicketAssignmentIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | assignment persisted and readable back, reassignment, and that cross-organization agents, cross-organization admins, non-admin actors, non-agent targets and unknown ids are rejected with the stored ticket left `OPEN` and unassigned |
 | `TicketAgentWorkflowIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full `OPEN` → `ASSIGNED` → `IN_PROGRESS` → `RESOLVED` lifecycle persisted; resolve-before-start, double start and double resolve refused; other agents and the admin forbidden; reassignment transferring ownership, including of in-progress work; no reassignment once resolved |
@@ -1176,6 +1286,14 @@ spring.jpa.open-in-view=false
 
 helpdesk.tickets.admin-close-after=PT3H
 helpdesk.tickets.reopen-window=P7D
+
+helpdesk.security.jwt.secret=${JWT_SECRET:}
+helpdesk.security.jwt.access-token-ttl=PT1H
+helpdesk.security.jwt.issuer=helpdesk
+
+helpdesk.bootstrap.super-admin.email=${BOOTSTRAP_SUPER_ADMIN_EMAIL:}
+helpdesk.bootstrap.super-admin.password=${BOOTSTRAP_SUPER_ADMIN_PASSWORD:}
+helpdesk.bootstrap.super-admin.name=${BOOTSTRAP_SUPER_ADMIN_NAME:Super Admin}
 ```
 
 All sensitive values are driven by environment variables:
@@ -1186,6 +1304,10 @@ All sensitive values are driven by environment variables:
 | `DB_URL` | JDBC connection URL, e.g. `jdbc:postgresql://localhost:5432/helpdesk` |
 | `DB_USERNAME` | PostgreSQL username |
 | `DB_PASSWORD` | PostgreSQL password |
+| `JWT_SECRET` | **Required.** Random signing key of at least 32 characters. The application refuses to start without it. Generate one with `openssl rand -base64 48` |
+| `BOOTSTRAP_SUPER_ADMIN_EMAIL` | Email of the first super admin, created on startup if it does not exist |
+| `BOOTSTRAP_SUPER_ADMIN_PASSWORD` | That super admin's initial password |
+| `BOOTSTRAP_SUPER_ADMIN_NAME` | Optional display name, default `Super Admin` |
 
 `ddl-auto=update` means Hibernate will automatically create or alter tables to match the entity definitions on startup.
 
@@ -1237,6 +1359,9 @@ CREATE DATABASE helpdesk;
 export DB_URL=jdbc:postgresql://localhost:5432/helpdesk
 export DB_USERNAME=postgres
 export DB_PASSWORD=yourpassword
+export JWT_SECRET="$(openssl rand -base64 48)"
+export BOOTSTRAP_SUPER_ADMIN_EMAIL=admin@example.com
+export BOOTSTRAP_SUPER_ADMIN_PASSWORD=choose-a-strong-password
 ```
 
 3. Build and run:
@@ -1245,7 +1370,9 @@ export DB_PASSWORD=yourpassword
 ./mvnw spring-boot:run
 ```
 
-4. The API is available at `http://localhost:8080`
+4. The API is available at `http://localhost:8080`. Log in as the bootstrap
+   super admin with `POST /api/auth/login`, then create an organization and its
+   users.
 
 > **Deployed API:** `https://helpdesk-ticketing-system-mi7f.onrender.com`
 
@@ -1284,6 +1411,9 @@ docker run -p 8080:8080 \
   -e DB_URL=jdbc:postgresql://host.docker.internal:5432/helpdesk \
   -e DB_USERNAME=postgres \
   -e DB_PASSWORD=yourpassword \
+  -e JWT_SECRET="$(openssl rand -base64 48)" \
+  -e BOOTSTRAP_SUPER_ADMIN_EMAIL=admin@example.com \
+  -e BOOTSTRAP_SUPER_ADMIN_PASSWORD=choose-a-strong-password \
   helpdesk-ticketing-system
 ```
 
@@ -1311,6 +1441,9 @@ services:
       DB_URL: jdbc:postgresql://db:5432/helpdesk
       DB_USERNAME: postgres
       DB_PASSWORD: yourpassword
+      JWT_SECRET: replace-with-a-random-value-of-at-least-32-characters
+      BOOTSTRAP_SUPER_ADMIN_EMAIL: admin@example.com
+      BOOTSTRAP_SUPER_ADMIN_PASSWORD: choose-a-strong-password
     depends_on:
       - db
 ```
@@ -1322,6 +1455,11 @@ docker compose up --build
 ---
 
 ## Postman Screenshots
+
+> **Note:** these screenshots were taken before authentication was added.
+> Requests now need an `Authorization: Bearer <token>` header, and the
+> `customerId` field shown when creating a ticket no longer exists; the customer
+> is the logged-in user.
 
 The following screenshots demonstrate the API working end-to-end via Postman.
 
