@@ -12,4 +12,12 @@ public class InvalidTicketStateException extends RuntimeException {
     public InvalidTicketStateException(String action, TicketStatus currentStatus) {
         super("Cannot " + action + " a ticket with status " + currentStatus);
     }
+
+    /**
+     * For a status that permits the action in general but not yet or no
+     * longer, such as a time window that has not opened or has expired.
+     */
+    public InvalidTicketStateException(String message) {
+        super(message);
+    }
 }

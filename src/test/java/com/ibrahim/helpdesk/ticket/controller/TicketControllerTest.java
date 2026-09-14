@@ -7,7 +7,9 @@ import com.ibrahim.helpdesk.exception.TicketNotFoundException;
 import com.ibrahim.helpdesk.organization.dto.OrganizationSummaryResponse;
 import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
+import com.ibrahim.helpdesk.ticket.dto.CloseTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
+import com.ibrahim.helpdesk.ticket.dto.ReopenTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.entity.TicketCategory;
 import com.ibrahim.helpdesk.ticket.entity.TicketStatus;
@@ -308,5 +310,95 @@ class TicketControllerTest {
                         .content(AGENT_BODY))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("Cannot resolve a ticket with status ASSIGNED"));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/reopen returns 200 with the REOPENED ticket")
+    void reopenReturnsOk() throws Exception {
+        when(ticketWorkflowService.reopenTicket(eq(42L), any(ReopenTicketRequest.class)))
+                .thenReturn(ticketWithStatus(TicketStatus.REOPENED, null));
+
+        mockMvc.perform(post("/api/tickets/42/reopen")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"customerId":1}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REOPENED"));
+
+        verify(ticketWorkflowService).reopenTicket(42L, new ReopenTicketRequest(1L));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/close returns 200 with the CLOSED ticket")
+    void closeReturnsOk() throws Exception {
+        when(ticketWorkflowService.closeTicket(eq(42L), any(CloseTicketRequest.class)))
+                .thenReturn(ticketWithStatus(TicketStatus.CLOSED, LocalDateTime.now()));
+
+        mockMvc.perform(post("/api/tickets/42/close")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"userId":1}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CLOSED"));
+
+        verify(ticketWorkflowService).closeTicket(42L, new CloseTicketRequest(1L));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/reopen requires customerId")
+    void reopenValidatesBody() throws Exception {
+        mockMvc.perform(post("/api/tickets/42/reopen")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.customerId").value("Customer id is required"));
+
+        verify(ticketWorkflowService, never()).reopenTicket(anyLong(), any(ReopenTicketRequest.class));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/close requires userId")
+    void closeValidatesBody() throws Exception {
+        mockMvc.perform(post("/api/tickets/42/close")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.userId").value("User id is required"));
+
+        verify(ticketWorkflowService, never()).closeTicket(anyLong(), any(CloseTicketRequest.class));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/close maps an early admin close to 409 with the reason")
+    void closeMapsEarlyAdminCloseTo409() throws Exception {
+        String reason = "The customer has 3 hours after resolution to close this ticket; "
+                + "an administrator can close it from 2026-09-14T15:00";
+        when(ticketWorkflowService.closeTicket(eq(42L), any(CloseTicketRequest.class)))
+                .thenThrow(new InvalidTicketStateException(reason));
+
+        mockMvc.perform(post("/api/tickets/42/close")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"userId":10}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(reason));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/reopen maps a non-customer caller to 403")
+    void reopenMapsForbiddenTo403() throws Exception {
+        when(ticketWorkflowService.reopenTicket(eq(42L), any(ReopenTicketRequest.class)))
+                .thenThrow(new ForbiddenOperationException("Only the customer who opened this ticket can reopen it"));
+
+        mockMvc.perform(post("/api/tickets/42/reopen")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"customerId":20}
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.path").value("/api/tickets/42/reopen"));
     }
 }

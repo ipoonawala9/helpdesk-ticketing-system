@@ -2,7 +2,9 @@ package com.ibrahim.helpdesk.ticket.controller;
 
 import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
+import com.ibrahim.helpdesk.ticket.dto.CloseTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
+import com.ibrahim.helpdesk.ticket.dto.ReopenTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.dto.UpdateTicketRequest;
 import com.ibrahim.helpdesk.ticket.service.TicketService;
@@ -68,6 +70,22 @@ public class TicketController {
             @Valid @RequestBody AgentActionRequest request) {
 
         return ticketWorkflowService.resolveTicket(id, request);
+    }
+
+    @PostMapping("/{id}/reopen")
+    public TicketResponse reopenTicket(
+            @PathVariable Long id,
+            @Valid @RequestBody ReopenTicketRequest request) {
+
+        return ticketWorkflowService.reopenTicket(id, request);
+    }
+
+    @PostMapping("/{id}/close")
+    public TicketResponse closeTicket(
+            @PathVariable Long id,
+            @Valid @RequestBody CloseTicketRequest request) {
+
+        return ticketWorkflowService.closeTicket(id, request);
     }
 
     @DeleteMapping("/{id}")

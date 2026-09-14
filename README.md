@@ -63,9 +63,19 @@ named business action in `TicketWorkflowService` with its own rules:
 
 | Action | Actor | Transition |
 |---|---|---|
-| Assign | `ORG_ADMIN` of the ticket's organization | `OPEN` / `ASSIGNED` → `ASSIGNED` |
-| Start work | the ticket's assigned `SUPPORT_AGENT` | `ASSIGNED` → `IN_PROGRESS` |
+| Assign | `ORG_ADMIN` of the ticket's organization | `OPEN` / `ASSIGNED` / `REOPENED` → `ASSIGNED` |
+| Start work | the ticket's assigned `SUPPORT_AGENT` | `ASSIGNED` / `REOPENED` → `IN_PROGRESS` |
 | Resolve | the ticket's assigned `SUPPORT_AGENT` | `IN_PROGRESS` → `RESOLVED` (sets `resolvedAt`) |
+| Close | the ticket's `CUSTOMER` at any time, or its `ORG_ADMIN` 3 hours after resolution | `RESOLVED` → `CLOSED` (sets `closedAt`) |
+| Reopen | the ticket's `CUSTOMER` | `RESOLVED`, or `CLOSED` within 7 days → `REOPENED` |
+
+```
+OPEN → ASSIGNED → IN_PROGRESS → RESOLVED → CLOSED
+          ▲             ▲           │         │
+          │             │           ▼         │
+          └── assign ── REOPENED ◀── reopen ──┘
+                (start resumes with the same agent)
+```
 
 ---
 
@@ -123,10 +133,14 @@ helpdesk-ticketing-system/
 │   │   │   │   ├── repository/UserRepository.java
 │   │   │   │   └── service/UserService.java
 │   │   │   └── ticket/
+│   │   │       ├── config/TicketWorkflowConfig.java      # Clock bean
+│   │   │       ├── config/TicketWorkflowProperties.java  # helpdesk.tickets.*
 │   │   │       ├── controller/TicketController.java
 │   │   │       ├── dto/AgentActionRequest.java
 │   │   │       ├── dto/AssignTicketRequest.java
+│   │   │       ├── dto/CloseTicketRequest.java
 │   │   │       ├── dto/CreateTicketRequest.java
+│   │   │       ├── dto/ReopenTicketRequest.java
 │   │   │       ├── dto/TicketResponse.java
 │   │   │       ├── dto/UpdateTicketRequest.java
 │   │   │       ├── entity/Ticket.java
@@ -142,10 +156,13 @@ helpdesk-ticketing-system/
 │   └── test/
 │       ├── java/com/ibrahim/helpdesk/
 │       │   ├── ApiIntegrationTestSupport.java     # shared end-to-end helpers
+│       │   ├── MutableClock.java                  # test clock that can be advanced
 │       │   ├── HelpDeskApplicationTests.java
 │       │   ├── TicketApiIntegrationTest.java      # end-to-end, H2
 │       │   ├── TicketAgentWorkflowIntegrationTest.java
 │       │   ├── TicketAssignmentIntegrationTest.java
+│       │   ├── TicketReopenCloseIntegrationTest.java
+│       │   ├── ticket/config/TicketWorkflowPropertiesTest.java
 │       │   ├── ticket/controller/TicketControllerTest.java
 │       │   ├── ticket/service/TicketServiceTest.java
 │       │   ├── ticket/service/TicketWorkflowServiceTest.java
@@ -579,19 +596,21 @@ Rules, checked in this order:
 | 1 | Ticket exists | `404 Not Found` |
 | 2 | Admin exists | `404 Not Found` |
 | 3 | Admin has role `ORG_ADMIN`, is active, and belongs to the ticket's organization | `403 Forbidden` |
-| 4 | Ticket status is `OPEN` or `ASSIGNED` | `409 Conflict` |
+| 4 | Ticket status is `OPEN`, `ASSIGNED` or `REOPENED` | `409 Conflict` |
 | 5 | Agent exists | `404 Not Found` |
 | 6 | Agent has role `SUPPORT_AGENT`, is active, and belongs to the ticket's organization | `400 Bad Request` |
 
 The admin is authorised before the agent is looked up, so a caller without
 permission learns nothing about other users.
 
-**Reassignment:** an `ASSIGNED` ticket can be reassigned to a different agent
-before work starts. Assigning the agent who already holds the ticket is an
-idempotent no-op and does not change `updatedAt`. Tickets that are
-`IN_PROGRESS`, `RESOLVED`, `REOPENED` or `CLOSED` cannot be assigned through
-this endpoint; reassignment for those states is defined with the reopen/close
-workflow.
+**Reassignment:**
+- An `ASSIGNED` ticket can be reassigned to a different agent before work
+  starts.
+- A `REOPENED` ticket keeps its agent, but an admin can hand it to a
+  different one; it becomes `ASSIGNED`.
+- Assigning the agent who already holds the ticket is an idempotent no-op and
+  changes nothing, including `updatedAt` and status.
+- `IN_PROGRESS`, `RESOLVED` and `CLOSED` tickets cannot be assigned.
 
 Response `200 OK`: the updated ticket.
 
@@ -658,7 +677,7 @@ Rules for both actions, checked in this order:
 | 1 | Ticket exists | `404 Not Found` |
 | 2 | Acting user exists | `404 Not Found` |
 | 3 | Acting user is the ticket's current `assignedAgent`, still has role `SUPPORT_AGENT`, and is active | `403 Forbidden` |
-| 4 | Ticket is `ASSIGNED` (start) or `IN_PROGRESS` (resolve) | `409 Conflict` |
+| 4 | Ticket is `ASSIGNED` or `REOPENED` (start), or `IN_PROGRESS` (resolve) | `409 Conflict` |
 
 Notes:
 - Role and active flag are re-checked on every action, because either may
@@ -669,8 +688,99 @@ Notes:
   overwrites the original `resolvedAt`.
 - Reassigning a ticket moves ownership: the previous agent can no longer act
   on it. Once work has started, assignment returns `409`.
-- Starting work again on a `REOPENED` ticket is defined with the reopen/close
-  workflow.
+- A `REOPENED` ticket stays with its agent, who can start work on it again
+  directly.
+
+Response `200 OK`: the updated ticket.
+
+---
+
+#### Close Ticket
+
+```
+POST /api/tickets/{id}/close
+Content-Type: application/json
+```
+
+Request body:
+```json
+{
+  "userId": 1
+}
+```
+
+Closes a resolved ticket. `status` becomes `CLOSED`, and `closedAt` and
+`updatedAt` are set. `resolvedAt` is kept.
+
+Two users may close:
+- **The ticket's customer**, at any time after resolution, to confirm the
+  issue is fixed.
+- **An `ORG_ADMIN` of the ticket's organization**, on the customer's behalf,
+  but only once the customer has had **3 hours** after `resolvedAt` to respond.
+  An earlier attempt returns `409` with the time closing becomes available.
+
+Rules, checked in this order:
+
+| # | Rule | Failure |
+|---|---|---|
+| 1 | Ticket exists | `404 Not Found` |
+| 2 | Acting user exists | `404 Not Found` |
+| 3 | Acting user is the ticket's customer, or an `ORG_ADMIN` of its organization | `403 Forbidden` |
+| 4 | Acting user is active | `403 Forbidden` |
+| 5 | Ticket is `RESOLVED` | `409 Conflict` |
+| 6 | If an admin: at least 3 hours have passed since `resolvedAt` | `409 Conflict` |
+
+The assigned agent cannot close a ticket they resolved.
+
+Early admin close:
+```json
+{
+  "status": 409,
+  "error": "Conflict",
+  "message": "The customer has 3 hours after resolution to close this ticket; an administrator can close it from 2026-09-14T15:00",
+  "path": "/api/tickets/1/close"
+}
+```
+
+---
+
+#### Reopen Ticket
+
+```
+POST /api/tickets/{id}/reopen
+Content-Type: application/json
+```
+
+Request body:
+```json
+{
+  "customerId": 1
+}
+```
+
+The customer reports that the issue is not actually fixed. `status` becomes
+`REOPENED`, `reopenCount` goes up by one and `updatedAt` is refreshed.
+`resolvedAt` and `closedAt` are cleared, because the ticket is now neither
+resolved nor closed; they are set again when that next happens.
+
+The ticket **keeps its assigned agent**, who can start work on it again
+straight away. An admin can still reassign it to a different agent.
+
+Rules, checked in this order:
+
+| # | Rule | Failure |
+|---|---|---|
+| 1 | Ticket exists | `404 Not Found` |
+| 2 | Acting user exists | `404 Not Found` |
+| 3 | Acting user is the ticket's customer | `403 Forbidden` |
+| 4 | Acting user is active | `403 Forbidden` |
+| 5 | Ticket is `RESOLVED` or `CLOSED` | `409 Conflict` |
+| 6 | If `CLOSED`: no more than 7 days have passed since `closedAt` | `409 Conflict` |
+
+After the reopen window the customer is asked to open a new ticket instead.
+
+> **Interim identity:** `userId` and `customerId` identify the acting user
+> only until authentication exists, like `adminId` and `agentId`.
 
 Response `200 OK`: the updated ticket.
 
@@ -733,6 +843,18 @@ adding a field to an entity can never silently widen an API response.
 | `agentId` | Long | required |
 | `adminId` | Long | required; interim until authentication |
 
+#### CloseTicketRequest
+
+| Field | Type | Constraints |
+|---|---|---|
+| `userId` | Long | required; the ticket's customer or an org admin; interim until authentication |
+
+#### ReopenTicketRequest
+
+| Field | Type | Constraints |
+|---|---|---|
+| `customerId` | Long | required; interim until authentication |
+
 #### AgentActionRequest
 
 Used by `start` and `resolve`.
@@ -787,7 +909,7 @@ shape, so a client only ever has to parse one structure:
 | `TicketNotFoundException` | `404 Not Found` | `Ticket with ID X not found` |
 | `BusinessRuleException` | `400 Bad Request` | the rule that was violated |
 | `ForbiddenOperationException` | `403 Forbidden` | why the acting user may not do this |
-| `InvalidTicketStateException` | `409 Conflict` | e.g. `Cannot resolve a ticket with status ASSIGNED` |
+| `InvalidTicketStateException` | `409 Conflict` | e.g. `Cannot resolve a ticket with status ASSIGNED`, or a time window that has not opened or has expired |
 | `MethodArgumentNotValidException` | `400 Bad Request` | `Validation failed`, plus `fieldErrors` |
 | `HttpMessageNotReadableException` | `400 Bad Request` | `Malformed or unreadable request body` |
 | `MethodArgumentTypeMismatchException` | `400 Bad Request` | `Invalid value for parameter 'x'` |
@@ -831,11 +953,13 @@ needs neither a live database nor any environment variables:
 |---|---|---|
 | `TicketServiceTest` | unit (Mockito) | organization derived from the customer, server-controlled fields on create, ticket number generation, update touching only title/description/category |
 | `UserServiceTest` | unit (Mockito) | organization resolution, `SUPER_ADMIN` without an organization, rejection of an organization-scoped role with no organization, no password on the response record |
-| `TicketWorkflowServiceTest` | unit (Mockito) | every assignment rule: valid assignment and reassignment, idempotent same-agent assign, each non-admin role, inactive and cross-organization admin, each non-agent role, inactive and cross-organization agent, each non-assignable status, and that nothing is saved on any rejection; start and resolve by the assigned agent, refusal of every other actor (other agent, admin, customer, unassigned ticket, deactivated agent, changed role), every invalid source status, and `resolvedAt` handling |
-| `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assignment, start and resolve mapped to `200`/`400`/`403`/`409` |
+| `TicketWorkflowServiceTest` | unit (Mockito) | every assignment rule: valid assignment and reassignment, idempotent same-agent assign, each non-admin role, inactive and cross-organization admin, each non-agent role, inactive and cross-organization agent, each non-assignable status, and that nothing is saved on any rejection; start and resolve by the assigned agent, refusal of every other actor (other agent, admin, customer, unassigned ticket, deactivated agent, changed role), every invalid source status, and `resolvedAt` handling; reassigning and restarting `REOPENED` tickets; reopen and close by every allowed and refused actor, every invalid status, reopen-window and admin-close-window boundaries against a fixed clock |
+| `TicketWorkflowPropertiesTest` | unit (Spring `Binder`) | `helpdesk.tickets.*` defaults, overrides from environment variables named as documented, rejection of negative windows |
+| `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assign, start, resolve, close and reopen mapped to `200`/`400`/`403`/`409` |
 | `TicketApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full organization to user to ticket flow through the real web, service and persistence layers, asserting no `password` or `hibernateLazyInitializer` anywhere in the payload |
 | `TicketAssignmentIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | assignment persisted and readable back, reassignment, and that cross-organization agents, cross-organization admins, non-admin actors, non-agent targets and unknown ids are rejected with the stored ticket left `OPEN` and unassigned |
 | `TicketAgentWorkflowIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full `OPEN` → `ASSIGNED` → `IN_PROGRESS` → `RESOLVED` lifecycle persisted; resolve-before-start, double start and double resolve refused; other agents and the admin forbidden; reassignment transferring ownership; no reassignment once work has started |
+| `TicketReopenCloseIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | close, reopen, re-resolve and close again with `reopenCount` persisted; admin close refused before 3 hours and allowed after; reopen refused after 7 days; reassignment of a reopened ticket; other customers, the agent and a cross-organization admin forbidden. Time windows are tested by advancing a `MutableClock` rather than waiting |
 
 ---
 
@@ -855,6 +979,9 @@ spring.jpa.hibernate.ddl-auto=update
 spring.jpa.show-sql=false
 spring.jpa.properties.hibernate.format_sql=true
 spring.jpa.open-in-view=false
+
+helpdesk.tickets.admin-close-after=PT3H
+helpdesk.tickets.reopen-window=P7D
 ```
 
 All sensitive values are driven by environment variables:
@@ -871,6 +998,14 @@ All sensitive values are driven by environment variables:
 `open-in-view=false` is safe here because every entity-to-DTO mapping happens
 inside a transactional service method, so no lazy association is ever touched
 during view rendering.
+
+Ticket workflow time windows use ISO-8601 durations and can be overridden per
+environment, for example with `HELPDESK_TICKETS_ADMIN_CLOSE_AFTER=PT2H` or `HELPDESK_TICKETS_REOPEN_WINDOW=P14D`:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `helpdesk.tickets.admin-close-after` | `PT3H` | How long the customer has to close a resolved ticket before an org admin may close it instead |
+| `helpdesk.tickets.reopen-window` | `P7D` | How long after closure the customer may still reopen a ticket |
 
 ---
 

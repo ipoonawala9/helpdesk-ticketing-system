@@ -1,13 +1,19 @@
 package com.ibrahim.helpdesk;
 
 import com.jayway.jsonpath.JsonPath;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
+import java.time.ZoneId;
 import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -22,10 +28,31 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@Import(ApiIntegrationTestSupport.TestClockConfig.class)
 abstract class ApiIntegrationTestSupport {
+
+    @TestConfiguration
+    static class TestClockConfig {
+
+        /** Replaces the system clock so tests can move time forward. */
+        @Bean
+        @Primary
+        MutableClock testClock() {
+            return new MutableClock(ZoneId.systemDefault());
+        }
+    }
 
     @Autowired
     protected MockMvc mockMvc;
+
+    @Autowired
+    protected MutableClock clock;
+
+    @BeforeEach
+    void resetClock() {
+        // The clock bean is shared by every test in the context.
+        clock.reset();
+    }
 
     protected long createOrganization(String name) throws Exception {
         String slug = name.toLowerCase().replace(' ', '-');
@@ -70,6 +97,22 @@ abstract class ApiIntegrationTestSupport {
 
     protected ResultActions resolve(long ticketId, long agentId) throws Exception {
         return agentAction("resolve", ticketId, agentId);
+    }
+
+    protected ResultActions reopen(long ticketId, long customerId) throws Exception {
+        return mockMvc.perform(post("/api/tickets/{id}/reopen", ticketId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"customerId":%d}
+                        """.formatted(customerId)));
+    }
+
+    protected ResultActions close(long ticketId, long userId) throws Exception {
+        return mockMvc.perform(post("/api/tickets/{id}/close", ticketId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"userId":%d}
+                        """.formatted(userId)));
     }
 
     protected String fetchTicket(long ticketId) throws Exception {
