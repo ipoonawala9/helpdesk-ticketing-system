@@ -38,11 +38,10 @@ public class TicketController {
         return ticketService.createTicket(request, currentUserId);
     }
 
-    /** System-wide list; organization-scoped lists for other roles come with tenant isolation. */
+    /** The tickets within the caller's scope; see TicketService#listTickets. */
     @GetMapping
-    @PreAuthorize("hasRole('SUPER_ADMIN')")
-    public List<TicketResponse> getAllTickets() {
-        return ticketService.getAllTickets();
+    public List<TicketResponse> listTickets(@CurrentUserId Long currentUserId) {
+        return ticketService.listTickets(currentUserId);
     }
 
     @GetMapping("/{id}")

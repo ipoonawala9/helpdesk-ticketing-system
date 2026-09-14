@@ -92,10 +92,14 @@ class TicketMessagingIntegrationTest extends ApiIntegrationTestSupport {
         assign(ticketId, agentId, adminId).andExpect(status().isOk());
         postMessage(ticketId, customerId, "Private detail").andExpect(status().isCreated());
 
+        // Outside their scope the ticket, and so its conversation, does not exist.
         for (long outsider : new long[] {otherCustomerId, unassignedAgentId, globexAdminId}) {
-            getMessages(ticketId, outsider).andExpect(status().isForbidden());
-            postMessage(ticketId, outsider, "Let me in").andExpect(status().isForbidden());
+            getMessages(ticketId, outsider).andExpect(status().isNotFound());
         }
+        postMessage(ticketId, otherCustomerId, "Let me in").andExpect(status().isNotFound());
+        postMessage(ticketId, unassignedAgentId, "Let me in").andExpect(status().isNotFound());
+        // Admins may never post, so the role check refuses before any lookup.
+        postMessage(ticketId, globexAdminId, "Let me in").andExpect(status().isForbidden());
         getMessages(ticketId, customerId).andExpect(jsonPath("$.length()").value(1));
     }
 
@@ -108,8 +112,8 @@ class TicketMessagingIntegrationTest extends ApiIntegrationTestSupport {
 
         assign(ticketId, newAgentId, adminId).andExpect(status().isOk());
 
-        getMessages(ticketId, agentId).andExpect(status().isForbidden());
-        postMessage(ticketId, agentId, "Still me").andExpect(status().isForbidden());
+        getMessages(ticketId, agentId).andExpect(status().isNotFound());
+        postMessage(ticketId, agentId, "Still me").andExpect(status().isNotFound());
 
         getMessages(ticketId, newAgentId)
                 .andExpect(status().isOk())

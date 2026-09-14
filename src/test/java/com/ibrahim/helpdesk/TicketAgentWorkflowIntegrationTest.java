@@ -92,19 +92,19 @@ class TicketAgentWorkflowIntegrationTest extends ApiIntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("another agent in the same organization cannot start or resolve")
+    @DisplayName("to another agent in the same organization, the ticket does not exist")
     void otherAgentIsForbidden() throws Exception {
         long otherAgentId = createUser("Pat Agent", "SUPPORT_AGENT", acmeId);
         assign(ticketId, agentId, adminId).andExpect(status().isOk());
 
         startWork(ticketId, otherAgentId)
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.message").value("Only the assigned agent can start work on this ticket"));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Ticket with ID " + ticketId + " not found"));
         assertStored("ASSIGNED");
 
         startWork(ticketId, agentId).andExpect(status().isOk());
 
-        resolve(ticketId, otherAgentId).andExpect(status().isForbidden());
+        resolve(ticketId, otherAgentId).andExpect(status().isNotFound());
         assertStored("IN_PROGRESS");
     }
 
@@ -125,7 +125,7 @@ class TicketAgentWorkflowIntegrationTest extends ApiIntegrationTestSupport {
         assign(ticketId, agentId, adminId).andExpect(status().isOk());
         assign(ticketId, secondAgentId, adminId).andExpect(status().isOk());
 
-        startWork(ticketId, agentId).andExpect(status().isForbidden());
+        startWork(ticketId, agentId).andExpect(status().isNotFound());
 
         startWork(ticketId, secondAgentId)
                 .andExpect(status().isOk())
@@ -135,7 +135,7 @@ class TicketAgentWorkflowIntegrationTest extends ApiIntegrationTestSupport {
     @Test
     @DisplayName("an unassigned OPEN ticket cannot be started by any agent")
     void unassignedTicketCannotBeStarted() throws Exception {
-        startWork(ticketId, agentId).andExpect(status().isForbidden());
+        startWork(ticketId, agentId).andExpect(status().isNotFound());
 
         assertStored("OPEN");
     }
@@ -152,7 +152,7 @@ class TicketAgentWorkflowIntegrationTest extends ApiIntegrationTestSupport {
                 .andExpect(jsonPath("$.status").value("ASSIGNED"))
                 .andExpect(jsonPath("$.assignedAgent.id").value((int) secondAgentId));
 
-        resolve(ticketId, agentId).andExpect(status().isForbidden());
+        resolve(ticketId, agentId).andExpect(status().isNotFound());
         resolve(ticketId, secondAgentId)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("Cannot resolve a ticket with status ASSIGNED"));

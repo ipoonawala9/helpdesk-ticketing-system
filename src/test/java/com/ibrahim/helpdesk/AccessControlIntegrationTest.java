@@ -135,8 +135,8 @@ class AccessControlIntegrationTest extends ApiIntegrationTestSupport {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.name").value("Acme Ltd"));
             mockMvc.perform(get("/api/organizations/{id}", acmeId).with(as(globexAdmin)))
-                    .andExpect(status().isForbidden())
-                    .andExpect(jsonPath("$.message").value("You can only view your own organization"));
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.message").value("Organization with id " + acmeId + " not found"));
             mockMvc.perform(get("/api/organizations/{id}", globexId).with(asSuperAdmin()))
                     .andExpect(status().isOk());
         }
@@ -158,10 +158,12 @@ class AccessControlIntegrationTest extends ApiIntegrationTestSupport {
         }
 
         @Test
-        @DisplayName("colleagues and other organizations' admins may not")
+        @DisplayName("to colleagues and other organizations' admins the user does not exist")
         void refusedViewers() throws Exception {
-            mockMvc.perform(get("/api/users/{id}", acmeCustomer).with(as(acmeAgent))).andExpect(status().isForbidden());
-            mockMvc.perform(get("/api/users/{id}", acmeCustomer).with(as(globexAdmin))).andExpect(status().isForbidden());
+            mockMvc.perform(get("/api/users/{id}", acmeCustomer).with(as(acmeAgent))).andExpect(status().isNotFound());
+            mockMvc.perform(get("/api/users/{id}", acmeCustomer).with(as(globexAdmin)))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.message").value("User with ID " + acmeCustomer + " not found"));
         }
     }
 
@@ -177,7 +179,7 @@ class AccessControlIntegrationTest extends ApiIntegrationTestSupport {
         }
 
         @Test
-        @DisplayName("the customer, the org admin and the super admin can read it; outsiders cannot")
+        @DisplayName("the customer, the org admin and the super admin can read it; to outsiders it does not exist")
         void reading() throws Exception {
             long otherCustomer = createUser("Kim Customer", "CUSTOMER", acmeId);
 
@@ -185,11 +187,18 @@ class AccessControlIntegrationTest extends ApiIntegrationTestSupport {
             mockMvc.perform(get("/api/tickets/{id}", ticketId).with(as(acmeAdmin))).andExpect(status().isOk());
             mockMvc.perform(get("/api/tickets/{id}", ticketId).with(asSuperAdmin())).andExpect(status().isOk());
 
-            mockMvc.perform(get("/api/tickets/{id}", ticketId).with(as(otherCustomer)))
-                    .andExpect(status().isForbidden())
-                    .andExpect(jsonPath("$.message").value("You do not have access to this ticket"));
-            mockMvc.perform(get("/api/tickets/{id}", ticketId).with(as(acmeAgent))).andExpect(status().isForbidden());
-            mockMvc.perform(get("/api/tickets/{id}", ticketId).with(as(globexAdmin))).andExpect(status().isForbidden());
+            // Indistinguishable from a ticket id that was never created.
+            String unknown = mockMvc.perform(get("/api/tickets/{id}", 999_999L).with(as(otherCustomer)))
+                    .andExpect(status().isNotFound())
+                    .andReturn().getResponse().getContentAsString();
+            for (long outsider : new long[] {otherCustomer, acmeAgent, globexAdmin}) {
+                String hidden = mockMvc.perform(get("/api/tickets/{id}", ticketId).with(as(outsider)))
+                        .andExpect(status().isNotFound())
+                        .andExpect(jsonPath("$.message").value("Ticket with ID " + ticketId + " not found"))
+                        .andReturn().getResponse().getContentAsString();
+                org.assertj.core.api.Assertions.assertThat(com.jayway.jsonpath.JsonPath.<String>read(hidden, "$.error"))
+                        .isEqualTo(com.jayway.jsonpath.JsonPath.<String>read(unknown, "$.error"));
+            }
         }
 
         @Test
@@ -210,8 +219,7 @@ class AccessControlIntegrationTest extends ApiIntegrationTestSupport {
 
             mockMvc.perform(put("/api/tickets/{id}", ticketId).with(as(otherCustomer))
                             .contentType(MediaType.APPLICATION_JSON).content(body))
-                    .andExpect(status().isForbidden())
-                    .andExpect(jsonPath("$.message").value("Only the customer who opened this ticket can edit it"));
+                    .andExpect(status().isNotFound());
 
             mockMvc.perform(put("/api/tickets/{id}", ticketId).with(as(acmeCustomer))
                             .contentType(MediaType.APPLICATION_JSON).content(body))
@@ -223,7 +231,7 @@ class AccessControlIntegrationTest extends ApiIntegrationTestSupport {
         @DisplayName("only an admin of the ticket's organization can delete it")
         void deleting() throws Exception {
             mockMvc.perform(delete("/api/tickets/{id}", ticketId).with(as(globexAdmin)))
-                    .andExpect(status().isForbidden());
+                    .andExpect(status().isNotFound());
             mockMvc.perform(delete("/api/tickets/{id}", ticketId).with(as(acmeCustomer)))
                     .andExpect(status().isForbidden());
 
@@ -232,11 +240,12 @@ class AccessControlIntegrationTest extends ApiIntegrationTestSupport {
         }
 
         @Test
-        @DisplayName("the system-wide ticket list is for the super admin only")
+        @DisplayName("every role can list tickets; the scoped lists are tested in TenantIsolationIntegrationTest")
         void listing() throws Exception {
-            mockMvc.perform(get("/api/tickets").with(asSuperAdmin())).andExpect(status().isOk());
-            mockMvc.perform(get("/api/tickets").with(as(acmeAdmin))).andExpect(status().isForbidden());
-            mockMvc.perform(get("/api/tickets").with(as(acmeCustomer))).andExpect(status().isForbidden());
+            for (var viewer : new org.springframework.test.web.servlet.request.RequestPostProcessor[] {
+                    asSuperAdmin(), as(acmeAdmin), as(acmeAgent), as(acmeCustomer)}) {
+                mockMvc.perform(get("/api/tickets").with(viewer)).andExpect(status().isOk());
+            }
         }
     }
 }

@@ -2,6 +2,7 @@ package com.ibrahim.helpdesk.user.repository;
 
 import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.entity.UserRole;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 
@@ -16,6 +17,22 @@ extends JpaRepository<User, Long>{
     boolean existsByEmailIgnoreCase(String email);
 
     boolean existsByRole(UserRole role);
+
+    Optional<User> findByIdAndOrganizationId(Long id, Long organizationId);
+
+    // User lists fetch the organization in the same query instead of one query per organization.
+
+    @EntityGraph(attributePaths = "organization")
+    List<User> findAllByOrderByNameAscIdAsc();
+
+    @EntityGraph(attributePaths = "organization")
+    List<User> findByRoleOrderByNameAscIdAsc(UserRole role);
+
+    @EntityGraph(attributePaths = "organization")
+    List<User> findByOrganizationIdOrderByNameAscIdAsc(Long organizationId);
+
+    @EntityGraph(attributePaths = "organization")
+    List<User> findByOrganizationIdAndRoleOrderByNameAscIdAsc(Long organizationId, UserRole role);
 
     /**
      * Users whose stored password has no {@code {algorithm}} prefix, i.e. was

@@ -127,7 +127,7 @@ class TicketReopenCloseIntegrationTest extends ApiIntegrationTestSupport {
                 .andExpect(jsonPath("$.status").value("ASSIGNED"))
                 .andExpect(jsonPath("$.assignedAgent.id").value((int) newAgentId));
 
-        startWork(ticketId, agentId).andExpect(status().isForbidden());
+        startWork(ticketId, agentId).andExpect(status().isNotFound());
         startWork(ticketId, newAgentId).andExpect(status().isOk());
     }
 
@@ -137,9 +137,10 @@ class TicketReopenCloseIntegrationTest extends ApiIntegrationTestSupport {
         long otherCustomerId = createUser("Kim Customer", "CUSTOMER", acmeId);
         resolveTicket();
 
-        reopen(ticketId, otherCustomerId).andExpect(status().isForbidden());
+        // Another customer cannot see the ticket; agents may never reopen or close.
+        reopen(ticketId, otherCustomerId).andExpect(status().isNotFound());
         reopen(ticketId, agentId).andExpect(status().isForbidden());
-        close(ticketId, otherCustomerId).andExpect(status().isForbidden());
+        close(ticketId, otherCustomerId).andExpect(status().isNotFound());
         close(ticketId, agentId).andExpect(status().isForbidden());
 
         assertThat(JsonPath.<String>read(fetchTicket(ticketId), "$.status")).isEqualTo("RESOLVED");
@@ -153,7 +154,7 @@ class TicketReopenCloseIntegrationTest extends ApiIntegrationTestSupport {
         resolveTicket();
         clock.advance(Duration.ofDays(1));
 
-        close(ticketId, globexAdminId).andExpect(status().isForbidden());
+        close(ticketId, globexAdminId).andExpect(status().isNotFound());
     }
 
     @Test

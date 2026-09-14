@@ -36,6 +36,7 @@ import java.time.ZoneId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -125,13 +126,13 @@ class TicketWorkflowServiceTest {
     }
 
     private void givenTicketAndAdmin() {
-        when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+        when(ticketService.findVisibleOrThrow(eq(TICKET_ID), any())).thenReturn(ticket);
         when(userService.findOrThrow(ADMIN_ID)).thenReturn(admin);
     }
 
     private void givenTicketAdminAndAgent() {
         givenTicketAndAdmin();
-        when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+        when(userService.findInOrganizationOrThrow(eq(AGENT_ID), any())).thenReturn(agent);
     }
 
     private void assertNothingSaved() {
@@ -210,21 +211,21 @@ class TicketWorkflowServiceTest {
     class MissingResources {
 
         @Test
-        @DisplayName("rejects an unknown ticket before loading any user")
+        @DisplayName("rejects a ticket outside the admin's scope before looking up the agent")
         void rejectsUnknownTicket() {
-            when(ticketService.findOrThrow(TICKET_ID)).thenThrow(new TicketNotFoundException(TICKET_ID));
+            when(userService.findOrThrow(ADMIN_ID)).thenReturn(admin);
+            when(ticketService.findVisibleOrThrow(TICKET_ID, admin)).thenThrow(new TicketNotFoundException(TICKET_ID));
 
             assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(TicketNotFoundException.class);
 
-            verify(userService, never()).findOrThrow(any());
+            verify(userService, never()).findInOrganizationOrThrow(any(), any());
             assertNothingSaved();
         }
 
         @Test
         @DisplayName("rejects an unknown admin")
         void rejectsUnknownAdmin() {
-            when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
             when(userService.findOrThrow(ADMIN_ID)).thenThrow(new UserNotFoundException(ADMIN_ID));
 
             assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
@@ -234,10 +235,10 @@ class TicketWorkflowServiceTest {
         }
 
         @Test
-        @DisplayName("rejects an unknown agent")
+        @DisplayName("rejects an agent who is unknown or outside the ticket's organization as not found")
         void rejectsUnknownAgent() {
             givenTicketAndAdmin();
-            when(userService.findOrThrow(AGENT_ID)).thenThrow(new UserNotFoundException(AGENT_ID));
+            when(userService.findInOrganizationOrThrow(AGENT_ID, 7L)).thenThrow(new UserNotFoundException(AGENT_ID));
 
             assertThatThrownBy(() -> workflowService.assignTicket(TICKET_ID, request(), ADMIN_ID))
                     .isInstanceOf(UserNotFoundException.class)
@@ -262,7 +263,7 @@ class TicketWorkflowServiceTest {
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Only organization administrators can assign tickets");
 
-            verify(userService, never()).findOrThrow(AGENT_ID);
+            verify(userService, never()).findInOrganizationOrThrow(any(), any());
             assertNothingSaved();
         }
 
@@ -289,7 +290,7 @@ class TicketWorkflowServiceTest {
                     .isInstanceOf(ForbiddenOperationException.class)
                     .hasMessage("Administrators can only assign tickets from their own organization");
 
-            verify(userService, never()).findOrThrow(AGENT_ID);
+            verify(userService, never()).findInOrganizationOrThrow(any(), any());
             assertNothingSaved();
         }
     }
@@ -377,7 +378,7 @@ class TicketWorkflowServiceTest {
     private void givenAssignedTicket(TicketStatus status) {
         ticket.setStatus(status);
         ticket.setAssignedAgent(agent);
-        when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+        when(ticketService.findVisibleOrThrow(eq(TICKET_ID), any())).thenReturn(ticket);
     }
 
 
@@ -404,21 +405,20 @@ class TicketWorkflowServiceTest {
         }
 
         @Test
-        @DisplayName("rejects an unknown ticket before loading the agent")
+        @DisplayName("rejects a ticket outside the agent's scope")
         void rejectsUnknownTicket() {
-            when(ticketService.findOrThrow(TICKET_ID)).thenThrow(new TicketNotFoundException(TICKET_ID));
+            when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+            when(ticketService.findVisibleOrThrow(TICKET_ID, agent)).thenThrow(new TicketNotFoundException(TICKET_ID));
 
             assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, AGENT_ID))
                     .isInstanceOf(TicketNotFoundException.class);
 
-            verify(userService, never()).findOrThrow(any());
             assertNothingSaved();
         }
 
         @Test
         @DisplayName("rejects an unknown acting user")
         void rejectsUnknownAgent() {
-            givenAssignedTicket(TicketStatus.ASSIGNED);
             when(userService.findOrThrow(AGENT_ID)).thenThrow(new UserNotFoundException(AGENT_ID));
 
             assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, AGENT_ID))
@@ -445,7 +445,7 @@ class TicketWorkflowServiceTest {
         @Test
         @DisplayName("nobody can start an unassigned ticket; it is refused as 403, not 409")
         void rejectsUnassignedTicket() {
-            when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+            when(ticketService.findVisibleOrThrow(eq(TICKET_ID), any())).thenReturn(ticket);
             when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
 
             assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, AGENT_ID))
@@ -649,7 +649,7 @@ class TicketWorkflowServiceTest {
         ticket.setStatus(TicketStatus.RESOLVED);
         ticket.setAssignedAgent(agent);
         ticket.setResolvedAt(resolvedAt);
-        when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+        when(ticketService.findVisibleOrThrow(eq(TICKET_ID), any())).thenReturn(ticket);
     }
 
     /** A ticket that was resolved and then closed at the given time. */
@@ -658,7 +658,7 @@ class TicketWorkflowServiceTest {
         ticket.setAssignedAgent(agent);
         ticket.setResolvedAt(closedAt.minusHours(1));
         ticket.setClosedAt(closedAt);
-        when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+        when(ticketService.findVisibleOrThrow(eq(TICKET_ID), any())).thenReturn(ticket);
     }
 
     @Nested
@@ -774,7 +774,7 @@ class TicketWorkflowServiceTest {
         @EnumSource(value = TicketStatus.class, names = {"OPEN", "ASSIGNED", "IN_PROGRESS", "REOPENED"})
         void rejectsNonReopenableStatuses(TicketStatus status) {
             ticket.setStatus(status);
-            when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+            when(ticketService.findVisibleOrThrow(eq(TICKET_ID), any())).thenReturn(ticket);
             when(userService.findOrThrow(CUSTOMER_ID)).thenReturn(customer);
 
             assertThatThrownBy(() -> workflowService.reopenTicket(TICKET_ID, byCustomer))
@@ -788,7 +788,6 @@ class TicketWorkflowServiceTest {
         @Test
         @DisplayName("an unknown customer is a 404")
         void rejectsUnknownCustomer() {
-            givenResolvedTicket(NOW.minusMinutes(30));
             when(userService.findOrThrow(CUSTOMER_ID)).thenThrow(new UserNotFoundException(CUSTOMER_ID));
 
             assertThatThrownBy(() -> workflowService.reopenTicket(TICKET_ID, byCustomer))
@@ -928,7 +927,7 @@ class TicketWorkflowServiceTest {
         @EnumSource(value = TicketStatus.class, names = {"OPEN", "ASSIGNED", "IN_PROGRESS", "REOPENED", "CLOSED"})
         void rejectsNonClosableStatuses(TicketStatus status) {
             ticket.setStatus(status);
-            when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+            when(ticketService.findVisibleOrThrow(eq(TICKET_ID), any())).thenReturn(ticket);
             when(userService.findOrThrow(CUSTOMER_ID)).thenReturn(customer);
 
             assertThatThrownBy(() -> workflowService.closeTicket(TICKET_ID, CUSTOMER_ID))

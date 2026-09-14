@@ -41,8 +41,8 @@ public class MessageService {
     @Transactional
     public MessageResponse postMessage(Long ticketId, PostMessageRequest request, Long senderId) {
 
-        Ticket ticket = ticketService.findOrThrow(ticketId);
         User sender = userService.findOrThrow(senderId);
+        Ticket ticket = ticketService.findVisibleOrThrow(ticketId, sender);
 
         if (!isCustomer(ticket, sender) && !isAssignedAgent(ticket, sender)) {
             throw new ForbiddenOperationException(
@@ -69,8 +69,8 @@ public class MessageService {
     @Transactional(readOnly = true)
     public List<MessageResponse> getMessages(Long ticketId, Long userId) {
 
-        Ticket ticket = ticketService.findOrThrow(ticketId);
         User reader = userService.findOrThrow(userId);
+        Ticket ticket = ticketService.findVisibleOrThrow(ticketId, reader);
 
         if (!isCustomer(ticket, reader) && !isAssignedAgent(ticket, reader) && !isOrgAdmin(ticket, reader)) {
             throw new ForbiddenOperationException(

@@ -19,6 +19,7 @@ import com.ibrahim.helpdesk.user.entity.UserRole;
 import com.ibrahim.helpdesk.user.service.UserService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -149,8 +150,8 @@ class TicketServiceTest {
         existing.setReopenCount(2);
         existing.setCreatedAt(LocalDateTime.now().minusDays(3));
 
-        when(ticketRepository.findById(5L)).thenReturn(Optional.of(existing));
         when(userService.findOrThrow(1L)).thenReturn(customer);
+        when(ticketRepository.findByIdAndCustomerId(5L, 1L)).thenReturn(Optional.of(existing));
         when(priorityPolicy.determine(any(PriorityInput.class))).thenReturn(TicketPriority.MEDIUM);
         stubSaveAssigningId(5L);
 
@@ -174,7 +175,8 @@ class TicketServiceTest {
     @Test
     @DisplayName("getTicketById reports a missing ticket as TicketNotFoundException")
     void getTicketByIdRejectsMissingTicket() {
-        when(ticketRepository.findById(404L)).thenReturn(Optional.empty());
+        when(userService.findOrThrow(1L)).thenReturn(customer);
+        when(ticketRepository.findByIdAndCustomerId(404L, 1L)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> ticketService.getTicketById(404L, 1L))
                 .isInstanceOf(TicketNotFoundException.class)
@@ -219,54 +221,114 @@ class TicketServiceTest {
         verify(ticketRepository, never()).save(any(Ticket.class));
     }
 
-    @Test
-    @DisplayName("getTicketById lets the customer, the assigned agent, an org admin and a super admin read the ticket")
-    void getTicketByIdAllowedViewers() {
-        User agent = user(20L, UserRole.SUPPORT_AGENT, organization);
-        Ticket ticket = existingTicket(agent);
-        when(ticketRepository.findById(5L)).thenReturn(Optional.of(ticket));
-        User orgAdmin = user(10L, UserRole.ORG_ADMIN, organization);
-        User superAdmin = user(99L, UserRole.SUPER_ADMIN, null);
+    @Nested
+    @DisplayName("Ticket scope: each role's lookup is restricted in the query itself")
+    class Scope {
 
-        for (User viewer : java.util.List.of(customer, agent, orgAdmin, superAdmin)) {
-            when(userService.findOrThrow(viewer.getId())).thenReturn(viewer);
-            assertThat(ticketService.getTicketById(5L, viewer.getId()).id()).isEqualTo(5L);
+        private User agent;
+        private User orgAdmin;
+        private User superAdmin;
+
+        // Built here rather than in field initialisers: the outer setUp, which
+        // creates the organization, runs after this class is instantiated.
+        @org.junit.jupiter.api.BeforeEach
+        void users() {
+            agent = user(20L, UserRole.SUPPORT_AGENT, organization);
+            orgAdmin = user(10L, UserRole.ORG_ADMIN, organization);
+            superAdmin = user(99L, UserRole.SUPER_ADMIN, null);
+        }
+
+        @Test
+        @DisplayName("a customer looks tickets up by id and customer")
+        void customerScope() {
+            Ticket ticket = existingTicket(agent);
+            when(ticketRepository.findByIdAndCustomerId(5L, 1L)).thenReturn(Optional.of(ticket));
+
+            assertThat(ticketService.findVisibleOrThrow(5L, customer)).isSameAs(ticket);
+            verify(ticketRepository, never()).findById(any());
+        }
+
+        @Test
+        @DisplayName("an agent looks tickets up by id and assigned agent")
+        void agentScope() {
+            Ticket ticket = existingTicket(agent);
+            when(ticketRepository.findByIdAndAssignedAgentId(5L, 20L)).thenReturn(Optional.of(ticket));
+
+            assertThat(ticketService.findVisibleOrThrow(5L, agent)).isSameAs(ticket);
+            verify(ticketRepository, never()).findById(any());
+        }
+
+        @Test
+        @DisplayName("an org admin looks tickets up by id and organization")
+        void orgAdminScope() {
+            Ticket ticket = existingTicket(agent);
+            when(ticketRepository.findByIdAndOrganizationId(5L, 7L)).thenReturn(Optional.of(ticket));
+
+            assertThat(ticketService.findVisibleOrThrow(5L, orgAdmin)).isSameAs(ticket);
+            verify(ticketRepository, never()).findById(any());
+        }
+
+        @Test
+        @DisplayName("only a super admin looks tickets up by id alone")
+        void superAdminScope() {
+            Ticket ticket = existingTicket(agent);
+            when(ticketRepository.findById(5L)).thenReturn(Optional.of(ticket));
+
+            assertThat(ticketService.findVisibleOrThrow(5L, superAdmin)).isSameAs(ticket);
+        }
+
+        @Test
+        @DisplayName("a ticket outside the scope is reported exactly like a missing ticket")
+        void outOfScopeIsNotFound() {
+            when(ticketRepository.findByIdAndCustomerId(5L, 1L)).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> ticketService.findVisibleOrThrow(5L, customer))
+                    .isInstanceOf(TicketNotFoundException.class)
+                    .hasMessage("Ticket with ID 5 not found");
+        }
+
+        @Test
+        @DisplayName("an org admin without an organization sees no tickets")
+        void orgAdminWithoutOrganization() {
+            User orphanAdmin = user(11L, UserRole.ORG_ADMIN, null);
+
+            assertThatThrownBy(() -> ticketService.findVisibleOrThrow(5L, orphanAdmin))
+                    .isInstanceOf(TicketNotFoundException.class);
+            verify(ticketRepository, never()).findByIdAndOrganizationId(any(), any());
+        }
+
+        @Test
+        @DisplayName("each role's list comes from its own scoped query")
+        void listsAreScoped() {
+            when(userService.findOrThrow(1L)).thenReturn(customer);
+            when(userService.findOrThrow(20L)).thenReturn(agent);
+            when(userService.findOrThrow(10L)).thenReturn(orgAdmin);
+            when(userService.findOrThrow(99L)).thenReturn(superAdmin);
+
+            ticketService.listTickets(1L);
+            ticketService.listTickets(20L);
+            ticketService.listTickets(10L);
+            ticketService.listTickets(99L);
+
+            verify(ticketRepository).findByCustomerIdOrderByCreatedAtDescIdDesc(1L);
+            verify(ticketRepository).findByAssignedAgentIdOrderByCreatedAtDescIdDesc(20L);
+            verify(ticketRepository).findByOrganizationIdOrderByCreatedAtDescIdDesc(7L);
+            verify(ticketRepository).findAllByOrderByCreatedAtDescIdDesc();
+            verify(ticketRepository, never()).findAll();
         }
     }
 
     @Test
-    @DisplayName("getTicketById refuses other customers, unassigned agents and admins of other organizations")
-    void getTicketByIdRefusedViewers() {
-        Organization other = new Organization();
-        other.setId(8L);
-        Ticket ticket = existingTicket(user(20L, UserRole.SUPPORT_AGENT, organization));
-        when(ticketRepository.findById(5L)).thenReturn(Optional.of(ticket));
-
-        for (User viewer : java.util.List.of(
-                user(2L, UserRole.CUSTOMER, organization),
-                user(21L, UserRole.SUPPORT_AGENT, organization),
-                user(11L, UserRole.ORG_ADMIN, other))) {
-            when(userService.findOrThrow(viewer.getId())).thenReturn(viewer);
-            assertThatThrownBy(() -> ticketService.getTicketById(5L, viewer.getId()))
-                    .isInstanceOf(ForbiddenOperationException.class)
-                    .hasMessage("You do not have access to this ticket");
-        }
-    }
-
-    @Test
-    @DisplayName("updateTicket refuses anyone but the ticket's customer and changes nothing")
+    @DisplayName("updateTicket: a ticket that is not the customer's own is not found and nothing changes")
     void updateTicketOnlyByOwner() {
-        Ticket ticket = existingTicket(null);
-        when(ticketRepository.findById(5L)).thenReturn(Optional.of(ticket));
         User otherCustomer = user(2L, UserRole.CUSTOMER, organization);
         when(userService.findOrThrow(2L)).thenReturn(otherCustomer);
+        when(ticketRepository.findByIdAndCustomerId(5L, 2L)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> ticketService.updateTicket(
                 5L, new UpdateTicketRequest("Hijacked", "Hijacked", TicketCategory.OTHER), 2L))
-                .isInstanceOf(ForbiddenOperationException.class)
-                .hasMessage("Only the customer who opened this ticket can edit it");
+                .isInstanceOf(TicketNotFoundException.class);
 
-        assertThat(ticket.getTitle()).isEqualTo("Printer");
         verify(ticketRepository, never()).save(any(Ticket.class));
     }
 
@@ -274,8 +336,9 @@ class TicketServiceTest {
     @DisplayName("deleteTicket is allowed for an admin of the ticket's organization")
     void deleteTicketByOrgAdmin() {
         Ticket ticket = existingTicket(null);
-        when(ticketRepository.findById(5L)).thenReturn(Optional.of(ticket));
-        when(userService.findOrThrow(10L)).thenReturn(user(10L, UserRole.ORG_ADMIN, organization));
+        User orgAdmin = user(10L, UserRole.ORG_ADMIN, organization);
+        when(userService.findOrThrow(10L)).thenReturn(orgAdmin);
+        when(ticketRepository.findByIdAndOrganizationId(5L, 7L)).thenReturn(Optional.of(ticket));
 
         ticketService.deleteTicket(5L, 10L);
 
@@ -283,18 +346,21 @@ class TicketServiceTest {
     }
 
     @Test
-    @DisplayName("deleteTicket refuses the customer and admins of other organizations")
+    @DisplayName("deleteTicket: another organization's admin gets not found; the ticket's customer is refused")
     void deleteTicketRefused() {
         Organization other = new Organization();
         other.setId(8L);
-        Ticket ticket = existingTicket(null);
-        when(ticketRepository.findById(5L)).thenReturn(Optional.of(ticket));
+        User otherAdmin = user(11L, UserRole.ORG_ADMIN, other);
+        when(userService.findOrThrow(11L)).thenReturn(otherAdmin);
+        when(ticketRepository.findByIdAndOrganizationId(5L, 8L)).thenReturn(Optional.empty());
 
-        for (User deleter : java.util.List.of(customer, user(11L, UserRole.ORG_ADMIN, other))) {
-            when(userService.findOrThrow(deleter.getId())).thenReturn(deleter);
-            assertThatThrownBy(() -> ticketService.deleteTicket(5L, deleter.getId()))
-                    .isInstanceOf(ForbiddenOperationException.class);
-        }
+        assertThatThrownBy(() -> ticketService.deleteTicket(5L, 11L)).isInstanceOf(TicketNotFoundException.class);
+
+        when(userService.findOrThrow(1L)).thenReturn(customer);
+        when(ticketRepository.findByIdAndCustomerId(5L, 1L)).thenReturn(Optional.of(existingTicket(null)));
+
+        assertThatThrownBy(() -> ticketService.deleteTicket(5L, 1L)).isInstanceOf(ForbiddenOperationException.class);
+
         verify(ticketRepository, never()).delete(any(Ticket.class));
     }
 }

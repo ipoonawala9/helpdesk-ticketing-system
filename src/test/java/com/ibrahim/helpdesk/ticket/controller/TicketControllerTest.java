@@ -117,9 +117,6 @@ class TicketControllerTest {
             "POST,   /api/tickets,             SUPPORT_AGENT",
             "POST,   /api/tickets,             ORG_ADMIN",
             "POST,   /api/tickets,             SUPER_ADMIN",
-            "GET,    /api/tickets,             CUSTOMER",
-            "GET,    /api/tickets,             SUPPORT_AGENT",
-            "GET,    /api/tickets,             ORG_ADMIN",
             "PUT,    /api/tickets/42,          SUPPORT_AGENT",
             "PUT,    /api/tickets/42,          ORG_ADMIN",
             "DELETE, /api/tickets/42,          CUSTOMER",
@@ -205,14 +202,16 @@ class TicketControllerTest {
                 .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
     }
 
-    @Test
-    @DisplayName("GET /api/tickets is available to a SUPER_ADMIN")
-    void listForSuperAdmin() throws Exception {
-        when(ticketService.getAllTickets()).thenReturn(List.of(ticket(TicketStatus.OPEN)));
+    @ParameterizedTest(name = "GET /api/tickets as {0} passes the caller's id to the scoped list")
+    @org.junit.jupiter.params.provider.EnumSource(UserRole.class)
+    void listForEveryRole(UserRole role) throws Exception {
+        when(ticketService.listTickets(77L)).thenReturn(List.of(ticket(TicketStatus.OPEN)));
 
-        mockMvc.perform(get("/api/tickets").with(as(100L, UserRole.SUPER_ADMIN)))
+        mockMvc.perform(get("/api/tickets").with(as(77L, role)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].id").value(42));
+
+        verify(ticketService).listTickets(77L);
     }
 
     @Test

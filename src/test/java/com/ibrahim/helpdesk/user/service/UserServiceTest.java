@@ -272,7 +272,7 @@ class UserServiceTest {
     }
 
     @Nested
-    @DisplayName("Viewing users")
+    @DisplayName("Viewing and listing users")
     class Viewing {
 
         private final User target = user(3L, UserRole.CUSTOMER, null);
@@ -282,31 +282,89 @@ class UserServiceTest {
             target.setOrganization(acme);
         }
 
-        private void given(User viewer) {
+        @Test
+        @DisplayName("a user always sees themselves")
+        void self() {
             when(userRepository.findById(3L)).thenReturn(Optional.of(target));
-            if (viewer != target) {
-                when(userRepository.findById(viewer.getId())).thenReturn(Optional.of(viewer));
-            }
+
+            assertThat(userService.getUserById(3L, 3L).id()).isEqualTo(3L);
         }
 
         @Test
-        void selfSuperAdminAndSameOrgAdminAllowed() {
-            for (User viewer : java.util.List.of(target, superAdmin, orgAdmin)) {
-                given(viewer);
-                assertThat(userService.getUserById(3L, viewer.getId()).id()).isEqualTo(3L);
-            }
+        @DisplayName("a super admin looks up anyone; an org admin only within their organization")
+        void adminScopes() {
+            when(userRepository.findById(SUPER_ADMIN_ID)).thenReturn(Optional.of(superAdmin));
+            when(userRepository.findById(3L)).thenReturn(Optional.of(target));
+            assertThat(userService.getUserById(3L, SUPER_ADMIN_ID).id()).isEqualTo(3L);
+
+            when(userRepository.findById(ORG_ADMIN_ID)).thenReturn(Optional.of(orgAdmin));
+            when(userRepository.findByIdAndOrganizationId(3L, 7L)).thenReturn(Optional.of(target));
+            assertThat(userService.getUserById(3L, ORG_ADMIN_ID).id()).isEqualTo(3L);
         }
 
         @Test
-        void othersRefused() {
-            for (User viewer : java.util.List.of(
-                    user(4L, UserRole.CUSTOMER, acme),
-                    user(20L, UserRole.SUPPORT_AGENT, acme),
-                    user(11L, UserRole.ORG_ADMIN, globex))) {
-                given(viewer);
-                assertThatThrownBy(() -> userService.getUserById(3L, viewer.getId()))
-                        .isInstanceOf(ForbiddenOperationException.class);
+        @DisplayName("anyone outside the viewer's scope is reported as not found")
+        void outOfScopeIsNotFound() {
+            User globexAdmin = user(11L, UserRole.ORG_ADMIN, globex);
+            when(userRepository.findById(11L)).thenReturn(Optional.of(globexAdmin));
+            when(userRepository.findByIdAndOrganizationId(3L, 8L)).thenReturn(Optional.empty());
+            assertThatThrownBy(() -> userService.getUserById(3L, 11L))
+                    .isInstanceOf(com.ibrahim.helpdesk.exception.UserNotFoundException.class);
+
+            for (UserRole role : new UserRole[] {UserRole.CUSTOMER, UserRole.SUPPORT_AGENT}) {
+                User colleague = user(40L + role.ordinal(), role, acme);
+                when(userRepository.findById(colleague.getId())).thenReturn(Optional.of(colleague));
+                assertThatThrownBy(() -> userService.getUserById(3L, colleague.getId()))
+                        .isInstanceOf(com.ibrahim.helpdesk.exception.UserNotFoundException.class);
             }
+            verify(userRepository, never()).findById(3L);
+        }
+
+        @Test
+        @DisplayName("an org admin's list is always their own organization, optionally by role")
+        void orgAdminList() {
+            when(userRepository.findById(ORG_ADMIN_ID)).thenReturn(Optional.of(orgAdmin));
+
+            userService.listUsers(ORG_ADMIN_ID, null, null);
+            userService.listUsers(ORG_ADMIN_ID, UserRole.SUPPORT_AGENT, 7L);
+
+            verify(userRepository).findByOrganizationIdOrderByNameAscIdAsc(7L);
+            verify(userRepository).findByOrganizationIdAndRoleOrderByNameAscIdAsc(7L, UserRole.SUPPORT_AGENT);
+            verify(userRepository, never()).findAllByOrderByNameAscIdAsc();
+        }
+
+        @Test
+        @DisplayName("an org admin naming another organization gets not found")
+        void orgAdminOtherOrganization() {
+            when(userRepository.findById(ORG_ADMIN_ID)).thenReturn(Optional.of(orgAdmin));
+
+            assertThatThrownBy(() -> userService.listUsers(ORG_ADMIN_ID, null, 8L))
+                    .isInstanceOf(OrganizationNotFoundException.class);
+            verify(userRepository, never()).findByOrganizationIdOrderByNameAscIdAsc(8L);
+        }
+
+        @Test
+        @DisplayName("a super admin lists everyone or one organization, optionally by role")
+        void superAdminList() {
+            when(userRepository.findById(SUPER_ADMIN_ID)).thenReturn(Optional.of(superAdmin));
+
+            userService.listUsers(SUPER_ADMIN_ID, null, null);
+            userService.listUsers(SUPER_ADMIN_ID, UserRole.ORG_ADMIN, null);
+            userService.listUsers(SUPER_ADMIN_ID, null, 8L);
+
+            verify(userRepository).findAllByOrderByNameAscIdAsc();
+            verify(userRepository).findByRoleOrderByNameAscIdAsc(UserRole.ORG_ADMIN);
+            verify(userRepository).findByOrganizationIdOrderByNameAscIdAsc(8L);
+        }
+
+        @ParameterizedTest(name = "a {0} cannot list users")
+        @EnumSource(value = UserRole.class, names = {"CUSTOMER", "SUPPORT_AGENT"})
+        void nonAdminsCannotList(UserRole role) {
+            User viewer = user(50L, role, acme);
+            when(userRepository.findById(50L)).thenReturn(Optional.of(viewer));
+
+            assertThatThrownBy(() -> userService.listUsers(50L, null, null))
+                    .isInstanceOf(ForbiddenOperationException.class);
         }
     }
 }

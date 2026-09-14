@@ -1,6 +1,5 @@
 package com.ibrahim.helpdesk.organization.service;
 
-import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.OrganizationNotFoundException;
 import com.ibrahim.helpdesk.exception.UserNotFoundException;
 import com.ibrahim.helpdesk.organization.dto.CreateOrganizationRequest;
@@ -39,19 +38,22 @@ public class OrganizationService {
                 .toList();
     }
 
-    /** A SUPER_ADMIN may view any organization; everyone else only their own. */
+    /**
+     * A SUPER_ADMIN may view any organization; everyone else only their own.
+     * Another organization is reported as not found, so its existence is not
+     * revealed.
+     */
     @Transactional(readOnly = true)
     public OrganizationResponse getOrganizationById(Long id, Long viewerId) {
-        Organization organization = findOrThrow(id);
         User viewer = userRepository.findById(viewerId)
                 .orElseThrow(() -> new UserNotFoundException(viewerId));
 
         boolean member = viewer.getOrganization() != null
-                && Objects.equals(viewer.getOrganization().getId(), organization.getId());
+                && Objects.equals(viewer.getOrganization().getId(), id);
         if (viewer.getRole() != UserRole.SUPER_ADMIN && !member) {
-            throw new ForbiddenOperationException("You can only view your own organization");
+            throw new OrganizationNotFoundException(id);
         }
-        return OrganizationMapper.toResponse(organization);
+        return OrganizationMapper.toResponse(findOrThrow(id));
     }
 
     /**

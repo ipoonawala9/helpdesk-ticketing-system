@@ -64,25 +64,25 @@ class TicketAssignmentIntegrationTest extends ApiIntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("an agent from another organization is rejected with 400 and nothing is stored")
+    @DisplayName("an agent from another organization is reported as not found and nothing is stored")
     void rejectsCrossOrganizationAgent() throws Exception {
         long globexAgentId = createUser("Gil Agent", "SUPPORT_AGENT", globexId);
 
         assign(ticketId, globexAgentId, acmeAdminId)
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("Agent must belong to the ticket's organization"));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("User with ID " + globexAgentId + " not found"));
 
         assertTicketStillOpenAndUnassigned();
     }
 
     @Test
-    @DisplayName("an admin from another organization is rejected with 403 and nothing is stored")
+    @DisplayName("to an admin from another organization the ticket does not exist, and nothing is stored")
     void rejectsCrossOrganizationAdmin() throws Exception {
         long globexAdminId = createUser("Gail Admin", "ORG_ADMIN", globexId);
 
         assign(ticketId, acmeAgentId, globexAdminId)
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error").value("Forbidden"));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("Not Found"));
 
         assertTicketStillOpenAndUnassigned();
     }

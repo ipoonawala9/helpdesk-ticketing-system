@@ -70,16 +70,18 @@ public class TicketWorkflowService {
     @Transactional
     public TicketResponse assignTicket(Long ticketId, AssignTicketRequest request, Long adminId) {
 
-        Ticket ticket = ticketService.findOrThrow(ticketId);
+        User admin = userService.findOrThrow(adminId);
+        Ticket ticket = ticketService.findVisibleOrThrow(ticketId, admin);
 
         // Authorise the actor before looking at the agent, so a caller without
         // permission learns nothing about other users.
-        User admin = userService.findOrThrow(adminId);
         requireOrgAdminOf(admin, ticket.getOrganization());
 
         requireStatus(ticket, ASSIGNABLE_STATUSES, "assign");
 
-        User agent = userService.findOrThrow(request.agentId());
+        // Only agents of the ticket's own organization can be found, so an id
+        // from another organization is indistinguishable from an unknown one.
+        User agent = userService.findInOrganizationOrThrow(request.agentId(), ticket.getOrganization().getId());
         requireAssignableAgent(agent, ticket.getOrganization());
 
         // Re-assigning to the agent who already holds the ticket is a no-op, so
@@ -105,8 +107,9 @@ public class TicketWorkflowService {
     @Transactional
     public TicketResponse startWork(Long ticketId, Long agentId) {
 
-        Ticket ticket = ticketService.findOrThrow(ticketId);
-        requireAssignedAgent(ticket, userService.findOrThrow(agentId), "start work on");
+        User agent = userService.findOrThrow(agentId);
+        Ticket ticket = ticketService.findVisibleOrThrow(ticketId, agent);
+        requireAssignedAgent(ticket, agent, "start work on");
         requireStatus(ticket, STARTABLE_STATUSES, "start work on");
 
         ticket.setStatus(TicketStatus.IN_PROGRESS);
@@ -122,8 +125,9 @@ public class TicketWorkflowService {
     @Transactional
     public TicketResponse resolveTicket(Long ticketId, Long agentId) {
 
-        Ticket ticket = ticketService.findOrThrow(ticketId);
-        requireAssignedAgent(ticket, userService.findOrThrow(agentId), "resolve");
+        User agent = userService.findOrThrow(agentId);
+        Ticket ticket = ticketService.findVisibleOrThrow(ticketId, agent);
+        requireAssignedAgent(ticket, agent, "resolve");
         requireStatus(ticket, EnumSet.of(TicketStatus.IN_PROGRESS), "resolve");
 
         LocalDateTime now = now();
@@ -146,8 +150,8 @@ public class TicketWorkflowService {
     @Transactional
     public TicketResponse reopenTicket(Long ticketId, Long customerId) {
 
-        Ticket ticket = ticketService.findOrThrow(ticketId);
         User actor = userService.findOrThrow(customerId);
+        Ticket ticket = ticketService.findVisibleOrThrow(ticketId, actor);
 
         if (!TicketParticipants.isCustomer(ticket, actor)) {
             throw new ForbiddenOperationException("Only the customer who opened this ticket can reopen it");
@@ -184,8 +188,8 @@ public class TicketWorkflowService {
     @Transactional
     public TicketResponse closeTicket(Long ticketId, Long userId) {
 
-        Ticket ticket = ticketService.findOrThrow(ticketId);
         User actor = userService.findOrThrow(userId);
+        Ticket ticket = ticketService.findVisibleOrThrow(ticketId, actor);
 
         boolean isCustomer = TicketParticipants.isCustomer(ticket, actor);
         boolean isAdmin = TicketParticipants.isOrgAdmin(ticket, actor);

@@ -74,34 +74,29 @@ public class TicketService {
     }
 
     /**
-     * Every ticket in the system. Restricted to SUPER_ADMIN at the controller
-     * until organization-scoped ticket lists exist.
+     * The tickets the viewer is allowed to see, newest first: a customer's own
+     * tickets, an agent's assigned tickets, an administrator's organization's
+     * tickets, or every ticket for a SUPER_ADMIN.
      */
     @Transactional(readOnly = true)
-    public List<TicketResponse> getAllTickets() {
-        return ticketRepository.findAll()
-                .stream()
-                .map(TicketMapper::toResponse)
-                .toList();
-    }
-
-    /**
-     * Visible to the ticket's customer, its assigned agent, administrators of
-     * its organization, and SUPER_ADMIN.
-     */
-    @Transactional(readOnly = true)
-    public TicketResponse getTicketById(Long id, Long viewerId) {
-        Ticket ticket = findOrThrow(id);
+    public List<TicketResponse> listTickets(Long viewerId) {
         User viewer = userService.findOrThrow(viewerId);
 
-        boolean allowed = viewer.getRole() == UserRole.SUPER_ADMIN
-                || TicketParticipants.isCustomer(ticket, viewer)
-                || TicketParticipants.isAssignedAgent(ticket, viewer)
-                || TicketParticipants.isOrgAdmin(ticket, viewer);
-        if (!allowed) {
-            throw new ForbiddenOperationException("You do not have access to this ticket");
-        }
-        return TicketMapper.toResponse(ticket);
+        List<Ticket> tickets = switch (viewer.getRole()) {
+            case SUPER_ADMIN -> ticketRepository.findAllByOrderByCreatedAtDescIdDesc();
+            case ORG_ADMIN -> viewer.getOrganization() == null
+                    ? List.of()
+                    : ticketRepository.findByOrganizationIdOrderByCreatedAtDescIdDesc(viewer.getOrganization().getId());
+            case SUPPORT_AGENT -> ticketRepository.findByAssignedAgentIdOrderByCreatedAtDescIdDesc(viewer.getId());
+            case CUSTOMER -> ticketRepository.findByCustomerIdOrderByCreatedAtDescIdDesc(viewer.getId());
+        };
+
+        return tickets.stream().map(TicketMapper::toResponse).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public TicketResponse getTicketById(Long id, Long viewerId) {
+        return TicketMapper.toResponse(findVisibleOrThrow(id, userService.findOrThrow(viewerId)));
     }
 
     /**
@@ -113,8 +108,9 @@ public class TicketService {
     @Transactional
     public TicketResponse updateTicket(Long id, UpdateTicketRequest request, Long editorId) {
 
-        Ticket ticket = findOrThrow(id);
-        if (!TicketParticipants.isCustomer(ticket, userService.findOrThrow(editorId))) {
+        User editor = userService.findOrThrow(editorId);
+        Ticket ticket = findVisibleOrThrow(id, editor);
+        if (!TicketParticipants.isCustomer(ticket, editor)) {
             throw new ForbiddenOperationException("Only the customer who opened this ticket can edit it");
         }
 
@@ -130,8 +126,9 @@ public class TicketService {
     /** Only an administrator of the ticket's organization may delete it. */
     @Transactional
     public void deleteTicket(Long id, Long deleterId) {
-        Ticket ticket = findOrThrow(id);
-        if (!TicketParticipants.isOrgAdmin(ticket, userService.findOrThrow(deleterId))) {
+        User deleter = userService.findOrThrow(deleterId);
+        Ticket ticket = findVisibleOrThrow(id, deleter);
+        if (!TicketParticipants.isOrgAdmin(ticket, deleter)) {
             throw new ForbiddenOperationException(
                     "Only an administrator of this ticket's organization can delete it");
         }
@@ -162,6 +159,31 @@ public class TicketService {
                 ticket.getReopenCount() == null ? 0 : ticket.getReopenCount());
     }
 
+    /**
+     * Loads a ticket only if it is within the viewer's scope: their own ticket
+     * for a customer, a ticket assigned to them for an agent, a ticket of their
+     * organization for an administrator, any ticket for a SUPER_ADMIN.
+     *
+     * <p>The scope is part of the database query, and a ticket outside it is
+     * reported exactly like one that does not exist, so ids from other
+     * customers or organizations reveal nothing. Every user-facing ticket
+     * operation loads its ticket through here; action-specific rules are
+     * checked afterwards.
+     */
+    @Transactional(readOnly = true)
+    public Ticket findVisibleOrThrow(Long ticketId, User viewer) {
+        var ticket = switch (viewer.getRole()) {
+            case SUPER_ADMIN -> ticketRepository.findById(ticketId);
+            case ORG_ADMIN -> viewer.getOrganization() == null
+                    ? java.util.Optional.<Ticket>empty()
+                    : ticketRepository.findByIdAndOrganizationId(ticketId, viewer.getOrganization().getId());
+            case SUPPORT_AGENT -> ticketRepository.findByIdAndAssignedAgentId(ticketId, viewer.getId());
+            case CUSTOMER -> ticketRepository.findByIdAndCustomerId(ticketId, viewer.getId());
+        };
+        return ticket.orElseThrow(() -> new TicketNotFoundException(ticketId));
+    }
+
+    /** Unscoped lookup for internal use only; never for a request made by a user. */
     @Transactional(readOnly = true)
     public Ticket findOrThrow(Long id) {
         return ticketRepository.findById(id)

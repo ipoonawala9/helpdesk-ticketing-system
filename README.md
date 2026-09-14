@@ -21,6 +21,7 @@ A RESTful backend API for managing support tickets across multiple organizations
 - [Enums](#enums)
 - [Automatic Priority](#automatic-priority)
 - [Authentication & Authorization](#authentication--authorization)
+- [Multi-Tenant Isolation](#multi-tenant-isolation)
 - [API Reference](#api-reference)
   - [Organizations](#organizations-api)
   - [Users](#users-api)
@@ -66,6 +67,10 @@ Every request except login is authenticated with a JWT bearer token, and the
 acting user is always taken from that token, never from a request field. Each
 role can only do what its job needs, and rules that depend on a specific
 ticket, such as "only this ticket's customer", are enforced on the server.
+
+Organizations are isolated from each other. Every lookup is scoped in the
+database query to what the caller may see, and data outside that scope is
+answered exactly as if it did not exist.
 
 Ticket priority is always decided by the server from the ticket's category,
 wording and reopen count; clients cannot set it.
@@ -197,6 +202,7 @@ helpdesk-ticketing-system/
 │       │   ├── AuthIntegrationTest.java
 │       │   ├── MutableClock.java                  # test clock that can be advanced
 │       │   ├── SecurityStartupTasksIntegrationTest.java
+│       │   ├── TenantIsolationIntegrationTest.java
 │       │   ├── security/jwt/JwtPropertiesTest.java
 │       │   ├── support/WebSliceSecurity.java      # authenticated requests in @WebMvcTest slices
 │       │   ├── HelpDeskApplicationTests.java
@@ -459,7 +465,8 @@ with a token issued earlier.
 | No `Authorization` header | `401`, `Authentication is required`, `WWW-Authenticate: Bearer` |
 | Malformed, expired, wrongly signed, wrong issuer or unsigned token, or a token for a deleted or inactive user | `401`, `Invalid or expired access token`, `WWW-Authenticate: Bearer error="invalid_token"` |
 | Valid token, but the role may not use the endpoint | `403`, `You do not have permission to perform this action` |
-| Valid token and role, but not the right user for this ticket or organization | `403` with a specific reason, e.g. `Only the customer who opened this ticket can edit it` |
+| Valid token and role, but the ticket, user or organization is outside the caller's scope | `404`, exactly as for an id that does not exist (see [Multi-Tenant Isolation](#multi-tenant-isolation)) |
+| Valid token and role, the record is visible, but this particular action is not allowed | `403` with a specific reason, e.g. `Only organization administrators can assign tickets` |
 
 ### Who can do what
 
@@ -472,12 +479,13 @@ parameter identifies who is acting; such a field, if sent, is ignored.
 | `GET /api/auth/me` | any authenticated user | |
 | `POST /api/organizations` | `SUPER_ADMIN` | |
 | `GET /api/organizations` | `SUPER_ADMIN` | |
-| `GET /api/organizations/{id}` | any | `SUPER_ADMIN`, or a member of that organization |
+| `GET /api/organizations/{id}` | any | `SUPER_ADMIN`, or a member of that organization; otherwise `404` |
 | `POST /api/users` | `SUPER_ADMIN`, `ORG_ADMIN` | `ORG_ADMIN`: only `CUSTOMER` and `SUPPORT_AGENT`, only in their own organization |
-| `GET /api/users/{id}` | any | yourself, `SUPER_ADMIN`, or an `ORG_ADMIN` of the user's organization |
+| `GET /api/users` | `SUPER_ADMIN`, `ORG_ADMIN` | `ORG_ADMIN`: own organization only |
+| `GET /api/users/{id}` | any | yourself, `SUPER_ADMIN`, or an `ORG_ADMIN` of the user's organization; otherwise `404` |
 | `POST /api/tickets` | `CUSTOMER` | the ticket belongs to the authenticated customer |
-| `GET /api/tickets` | `SUPER_ADMIN` | organization-scoped lists for other roles are planned |
-| `GET /api/tickets/{id}` | any | the ticket's customer, its assigned agent, an `ORG_ADMIN` of its organization, or `SUPER_ADMIN` |
+| `GET /api/tickets` | any | each role sees only its scope, see [Multi-Tenant Isolation](#multi-tenant-isolation) |
+| `GET /api/tickets/{id}` | any | within the caller's scope; otherwise `404` |
 | `PUT /api/tickets/{id}` | `CUSTOMER` | the ticket's own customer |
 | `DELETE /api/tickets/{id}` | `ORG_ADMIN` | of the ticket's organization |
 | `POST /api/tickets/{id}/assign` | `ORG_ADMIN` | of the ticket's organization |
@@ -488,9 +496,10 @@ parameter identifies who is acting; such a field, if sent, is ignored.
 | `GET /api/tickets/{id}/messages` | `CUSTOMER`, `SUPPORT_AGENT`, `ORG_ADMIN` | the ticket's customer, assigned agent, or an admin of its organization |
 | `/v3/api-docs`, `/swagger-ui/**` | anyone | |
 
-Role checks are declared with `@PreAuthorize` on each controller method.
-Rules that depend on the specific ticket, user or organization are enforced in
-the services.
+Role checks are declared with `@PreAuthorize` on each controller method and
+run before anything is looked up, so a role that may never call an endpoint
+gets `403` without learning whether the id exists. Rules that depend on the
+specific ticket, user or organization are enforced in the services.
 
 There is no public sign-up: a `SUPER_ADMIN` creates organizations and their
 `ORG_ADMIN`s, and each `ORG_ADMIN` creates their organization's agents and
@@ -511,6 +520,65 @@ and stored as `{bcrypt}...`, so the algorithm can be upgraded later without
 invalidating existing passwords. On startup, any password still stored as plain
 text, from before hashing was introduced, is hashed in place; those users log
 in with the same password as before.
+
+---
+
+## Multi-Tenant Isolation
+
+Each organization is a tenant. A user can only ever reach data inside their
+scope:
+
+| Role | Tickets | Users | Organizations |
+|---|---|---|---|
+| `CUSTOMER` | tickets they opened | themselves | their own |
+| `SUPPORT_AGENT` | tickets currently assigned to them | themselves | their own |
+| `ORG_ADMIN` | every ticket of their organization | users of their organization | their own |
+| `SUPER_ADMIN` | every ticket, read-only | everyone | every organization |
+
+### Scope is enforced in the query
+
+Tickets and users are not loaded and then checked: the scope is part of the
+database query (`findByIdAndCustomerId`, `findByIdAndAssignedAgentId`,
+`findByIdAndOrganizationId`, and the matching list queries), so a record
+outside it is never read at all. All ticket operations, including workflow
+actions and messages, load their ticket through
+`TicketService.findVisibleOrThrow`, and the action-specific rules are then
+checked on top as a second layer.
+
+### Out of scope looks exactly like missing
+
+A ticket, user or organization outside the caller's scope returns `404` with
+the same body as an id that was never created, e.g.
+`Ticket with ID 42 not found`. Responses therefore never confirm that another
+customer's ticket or another organization's user exists.
+
+- An agent who is not assigned to a ticket, including one who was reassigned
+  away from it, gets `404` for it and its conversation.
+- Assigning an agent from another organization is `404`
+  (`User with ID 7 not found`), not a hint that the user exists elsewhere.
+- An org admin asking for `GET /api/users?organizationId=` of another
+  organization gets `404`.
+
+A `403` is only returned when the caller's role may never use the endpoint,
+checked before any lookup, or when the record is visible but the specific
+action is not allowed.
+
+### Nothing moves between organizations
+
+- A ticket's organization is always its customer's organization. Any
+  `organizationId`, `customerId`, `assignedAgentId` or `status` sent when
+  creating or editing a ticket is ignored.
+- There is no endpoint that modifies a user, so a user's organization and role
+  cannot be changed through the API. `PUT` and `PATCH /api/users/{id}` return
+  `405`.
+- An `ORG_ADMIN` can only create users in their own organization.
+
+### Super admin
+
+A `SUPER_ADMIN` has system-wide **read** access to tickets, users and
+organizations, and manages organizations and users. They do not take part in
+ticket work: assigning, closing and reading ticket conversations are refused
+with `403`.
 
 ---
 
@@ -574,7 +642,8 @@ Response `200 OK`: array of organization objects.
 
 #### Get Organization by ID
 
-A `SUPER_ADMIN`, or any member of the organization. Anyone else gets `403`.
+A `SUPER_ADMIN`, or any member of the organization. For anyone else the
+organization is reported as not found (`404`).
 
 ```
 GET /api/organizations/{id}
@@ -667,6 +736,29 @@ Response `404 Not Found` (if org not found):
 
 ---
 
+#### List Users
+
+```
+GET /api/users
+GET /api/users?role=SUPPORT_AGENT
+GET /api/users?organizationId=2&role=CUSTOMER
+```
+
+`SUPER_ADMIN` and `ORG_ADMIN` only. Returns users ordered by name.
+
+- An `ORG_ADMIN` always gets their own organization's users. `organizationId`
+  may be omitted or be their own; any other organization is `404`.
+- A `SUPER_ADMIN` gets every user, or one organization's with
+  `organizationId`.
+- `role` narrows the list, e.g. `?role=SUPPORT_AGENT` for the agents a ticket
+  can be assigned to.
+
+Response `200 OK`: array of user objects, without passwords. Organizations are
+loaded in the same query, so the list does not issue one query per
+organization.
+
+---
+
 #### Get User by ID
 
 ```
@@ -674,7 +766,7 @@ GET /api/users/{id}
 ```
 
 Allowed for the user themselves, a `SUPER_ADMIN`, or an `ORG_ADMIN` of the
-user's organization; anyone else gets `403`.
+user's organization. For anyone else the user is reported as not found (`404`).
 
 Response `200 OK`: single user object in the shape above.
 
@@ -752,10 +844,19 @@ Response `403 Forbidden` if the authenticated user is not a `CUSTOMER`.
 GET /api/tickets
 ```
 
-`SUPER_ADMIN` only, for now. Organization-scoped lists for the other roles
-arrive with tenant isolation.
+Every role can call this and gets only the tickets in its scope, newest first:
 
-Response `200 OK`: Array of all ticket objects.
+| Role | Tickets returned |
+|---|---|
+| `CUSTOMER` | tickets they opened |
+| `SUPPORT_AGENT` | tickets currently assigned to them |
+| `ORG_ADMIN` | every ticket of their organization |
+| `SUPER_ADMIN` | every ticket |
+
+The customer, assigned agent and organization of every ticket are loaded in
+the same query, so the number of queries does not grow with the list.
+
+Response `200 OK`: array of ticket objects.
 
 ---
 
@@ -766,8 +867,8 @@ GET /api/tickets/{id}
 ```
 
 Allowed for the ticket's customer, its current assigned agent, an `ORG_ADMIN`
-of its organization, and a `SUPER_ADMIN`. Anyone else gets `403`
-(`You do not have access to this ticket`).
+of its organization, and a `SUPER_ADMIN`. For anyone else the ticket is
+reported as not found (`404`), exactly like an id that does not exist.
 
 Response `200 OK`: Single ticket object.
 
@@ -803,7 +904,8 @@ Request body:
 - Updates `title`, `description`, `category`
 - Automatically updates `updatedAt` to current timestamp
 
-Only the customer who opened the ticket can edit it; anyone else gets `403`.
+Only the customer who opened the ticket can edit it; to other customers the
+ticket does not exist (`404`).
 Only these three fields can be changed. Status, priority, assignment,
 organization, ticket number, reopen count and the resolution and closure
 timestamps are server-controlled and are not editable through this endpoint.
@@ -836,11 +938,11 @@ Rules, checked in this order:
 
 | # | Rule | Failure |
 |---|---|---|
-| 1 | Ticket exists | `404 Not Found` |
-| 2 | The authenticated user has role `ORG_ADMIN`, is active, and belongs to the ticket's organization | `403 Forbidden` |
+| 1 | Ticket exists within the admin's organization | `404 Not Found` |
+| 2 | The authenticated user has role `ORG_ADMIN` and is active | `403 Forbidden` |
 | 3 | Ticket status is `OPEN`, `ASSIGNED`, `IN_PROGRESS` or `REOPENED` | `409 Conflict` |
-| 4 | Agent exists | `404 Not Found` |
-| 5 | Agent has role `SUPPORT_AGENT`, is active, and belongs to the ticket's organization | `400 Bad Request` |
+| 4 | Agent exists within the ticket's organization; an agent of another organization is treated as unknown | `404 Not Found` |
+| 5 | Agent has role `SUPPORT_AGENT` and is active | `400 Bad Request` |
 
 The admin is authorised before the agent is looked up, so a caller without
 permission learns nothing about other users.
@@ -902,14 +1004,14 @@ Rules for both actions, checked in this order:
 
 | # | Rule | Failure |
 |---|---|---|
-| 1 | Ticket exists | `404 Not Found` |
-| 2 | The authenticated user is the ticket's current `assignedAgent` and has role `SUPPORT_AGENT` | `403 Forbidden` |
+| 1 | Ticket exists and is currently assigned to the authenticated agent | `404 Not Found` |
+| 2 | The agent still has role `SUPPORT_AGENT` | `403 Forbidden` |
 | 3 | Ticket is `ASSIGNED` or `REOPENED` (start), or `IN_PROGRESS` (resolve) | `409 Conflict` |
 
 Notes:
 - Role and active flag are re-checked on every request, because either may
   have changed since the ticket was assigned.
-- An unassigned ticket fails rule 2, so nobody can start it.
+- An unassigned ticket fails rule 1, so nobody can start it.
 - Repeating a transition, such as starting an `IN_PROGRESS` ticket or resolving
   a `RESOLVED` one, is a `409`, not a silent success. A repeated resolve never
   overwrites the original `resolvedAt`.
@@ -944,8 +1046,8 @@ Rules, checked in this order:
 
 | # | Rule | Failure |
 |---|---|---|
-| 1 | Ticket exists | `404 Not Found` |
-| 2 | The authenticated user is the ticket's customer, or an `ORG_ADMIN` of its organization | `403 Forbidden` |
+| 1 | Ticket exists and is the customer's own, or belongs to the admin's organization | `404 Not Found` |
+| 2 | The authenticated user is the ticket's customer or an `ORG_ADMIN` of its organization | `403 Forbidden` |
 | 3 | Ticket is `RESOLVED` | `409 Conflict` |
 | 4 | If an admin: at least 3 hours have passed since `resolvedAt` | `409 Conflict` |
 
@@ -983,7 +1085,7 @@ Rules, checked in this order:
 
 | # | Rule | Failure |
 |---|---|---|
-| 1 | Ticket exists | `404 Not Found` |
+| 1 | Ticket exists and is the customer's own | `404 Not Found` |
 | 2 | The authenticated user is the ticket's customer | `403 Forbidden` |
 | 3 | Ticket is `RESOLVED` or `CLOSED` | `409 Conflict` |
 | 4 | If `CLOSED`: no more than 7 days have passed since `closedAt` | `409 Conflict` |
@@ -1066,8 +1168,8 @@ Response `201 Created`:
 | Failure | Status |
 |---|---|
 | Blank content, or content over 5000 characters | `400 Bad Request` |
-| Unknown ticket | `404 Not Found` |
-| Sender is not the ticket's customer or current assigned agent, or is inactive | `403 Forbidden` |
+| Unknown ticket, or a ticket outside the sender's scope (another customer's, or not assigned to this agent) | `404 Not Found` |
+| An `ORG_ADMIN` or `SUPER_ADMIN` tries to post | `403 Forbidden` |
 | Ticket is `CLOSED` | `409 Conflict` |
 
 #### Get Messages
@@ -1084,8 +1186,8 @@ reading a thread does not grow with the number of participants.
 
 | Failure | Status |
 |---|---|
-| Unknown ticket | `404 Not Found` |
-| User may not read this ticket's messages, or is inactive | `403 Forbidden` |
+| Unknown ticket, or a ticket outside the reader's scope | `404 Not Found` |
+| A `SUPER_ADMIN` tries to read | `403 Forbidden` |
 
 ---
 
@@ -1255,7 +1357,8 @@ needs neither a live database nor any environment variables:
 | `RuleBasedTicketPriorityPolicyTest` | unit | every category baseline; every incident, urgency, low-urgency and calm phrase in the lists; precedence between them; whole-word, case-insensitive and typographic-apostrophe matching; the documented negation limitation; reopen escalation and its `HIGH` ceiling; determinism and null safety |
 | `TicketControllerTest` | web slice (`@WebMvcTest` with the real `SecurityConfig`) | `401` without or with a malformed token; every role refused by every endpoint's `@PreAuthorize`; the authenticated user's id passed to the services; status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assign, start, resolve, close and reopen mapped to `200`/`400`/`403`/`409` |
 | `AuthIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | login success and the token's minimal claims; case-insensitive email; identical `401` for wrong password, unknown email and inactive account; hashed passwords at rest; rejection of missing, expired, forged-signature, wrong-issuer and unsigned tokens; deactivation and role changes applying to existing tokens immediately; bootstrap super admin login; public API docs |
-| `AccessControlIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | creating users as each role, within and across organizations, duplicate emails; organization and user visibility; reading, editing, deleting and listing tickets as each kind of user |
+| `AccessControlIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | creating users as each role, within and across organizations, duplicate emails; organization and user visibility; reading, editing, deleting and listing tickets as each kind of user, with out-of-scope reads indistinguishable from missing ids |
+| `TenantIsolationIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | exact ticket lists per role across two organizations, lists following reassignment, a query-count check that listing does not run a query per ticket; every cross-organization ticket, message, workflow, user and organization request answered `404`; scoped user lists; organization, customer, agent and status fields ignored on create and edit; no endpoint to modify a user; super admin read-only on tickets |
 | `SecurityStartupTasksIntegrationTest` | end-to-end (`@SpringBootTest`) | plain-text passwords hashed on startup with login still working and a second run changing nothing; bootstrap super admin never overwritten |
 | `JwtPropertiesTest` | unit | refusal to start without a signing secret, with one under 32 bytes, or with a non-positive token lifetime |
 | `TicketApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full organization to user to ticket flow through the real web, service and persistence layers, asserting no `password` or `hibernateLazyInitializer` anywhere in the payload |

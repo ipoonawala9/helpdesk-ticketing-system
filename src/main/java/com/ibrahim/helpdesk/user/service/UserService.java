@@ -3,6 +3,7 @@ package com.ibrahim.helpdesk.user.service;
 import com.ibrahim.helpdesk.exception.BusinessRuleException;
 import com.ibrahim.helpdesk.exception.EmailAlreadyInUseException;
 import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
+import com.ibrahim.helpdesk.exception.OrganizationNotFoundException;
 import com.ibrahim.helpdesk.exception.UserNotFoundException;
 import com.ibrahim.helpdesk.organization.entity.Organization;
 import com.ibrahim.helpdesk.organization.service.OrganizationService;
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
@@ -69,22 +71,69 @@ public class UserService {
 
     /**
      * A user may view their own profile. A SUPER_ADMIN may view anyone, and an
-     * ORG_ADMIN may view users of their own organization.
+     * ORG_ADMIN may view users of their own organization. Any other user is
+     * reported as not found, so ids outside the viewer's scope reveal nothing.
      */
     @Transactional(readOnly = true)
     public UserResponse getUserById(Long id, Long viewerId) {
-        User target = findOrThrow(id);
         User viewer = findOrThrow(viewerId);
 
-        boolean allowed = Objects.equals(target.getId(), viewer.getId())
-                || viewer.getRole() == UserRole.SUPER_ADMIN
-                || (viewer.getRole() == UserRole.ORG_ADMIN && sameOrganization(viewer, target));
-
-        if (!allowed) {
-            throw new ForbiddenOperationException(
-                    "You can only view your own profile or users of an organization you administer");
+        if (Objects.equals(id, viewer.getId())) {
+            return UserMapper.toResponse(viewer);
+        }
+        User target = switch (viewer.getRole()) {
+            case SUPER_ADMIN -> findOrThrow(id);
+            case ORG_ADMIN -> viewer.getOrganization() == null
+                    ? null
+                    : findInOrganizationOrThrow(id, viewer.getOrganization().getId());
+            case SUPPORT_AGENT, CUSTOMER -> null;
+        };
+        if (target == null) {
+            throw new UserNotFoundException(id);
         }
         return UserMapper.toResponse(target);
+    }
+
+    /**
+     * Users an administrator may see, ordered by name, optionally narrowed to
+     * one role. A SUPER_ADMIN sees every organization and may narrow to one; an
+     * ORG_ADMIN always sees only their own, and naming any other organization
+     * is answered as if it did not exist.
+     */
+    @Transactional(readOnly = true)
+    public List<UserResponse> listUsers(Long viewerId, UserRole role, Long organizationId) {
+        User viewer = findOrThrow(viewerId);
+
+        Long scope = switch (viewer.getRole()) {
+            case SUPER_ADMIN -> organizationId;
+            case ORG_ADMIN -> {
+                Long own = viewer.getOrganization() == null ? null : viewer.getOrganization().getId();
+                if (own == null || (organizationId != null && !organizationId.equals(own))) {
+                    throw new OrganizationNotFoundException(organizationId);
+                }
+                yield own;
+            }
+            default -> throw new ForbiddenOperationException("Only administrators can list users");
+        };
+
+        List<User> users;
+        if (scope == null) {
+            users = role == null
+                    ? userRepository.findAllByOrderByNameAscIdAsc()
+                    : userRepository.findByRoleOrderByNameAscIdAsc(role);
+        } else {
+            users = role == null
+                    ? userRepository.findByOrganizationIdOrderByNameAscIdAsc(scope)
+                    : userRepository.findByOrganizationIdAndRoleOrderByNameAscIdAsc(scope, role);
+        }
+        return users.stream().map(UserMapper::toResponse).toList();
+    }
+
+    /** A user who belongs to the given organization; anyone else is reported as not found. */
+    @Transactional(readOnly = true)
+    public User findInOrganizationOrThrow(Long userId, Long organizationId) {
+        return userRepository.findByIdAndOrganizationId(userId, organizationId)
+                .orElseThrow(() -> new UserNotFoundException(userId));
     }
 
     /**
@@ -127,12 +176,6 @@ public class UserService {
                     "Organization administrators can only create users in their own organization");
         }
         return own;
-    }
-
-    private static boolean sameOrganization(User a, User b) {
-        return a.getOrganization() != null
-                && b.getOrganization() != null
-                && Objects.equals(a.getOrganization().getId(), b.getOrganization().getId());
     }
 
     static String normaliseEmail(String email) {

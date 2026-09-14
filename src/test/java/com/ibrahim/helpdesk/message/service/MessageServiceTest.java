@@ -35,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -106,7 +107,7 @@ class MessageServiceTest {
     }
 
     private void given(User actor) {
-        when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+        when(ticketService.findVisibleOrThrow(eq(TICKET_ID), any())).thenReturn(ticket);
         when(userService.findOrThrow(actor.getId())).thenReturn(actor);
     }
 
@@ -250,12 +251,12 @@ class MessageServiceTest {
         @Test
         @DisplayName("unknown ticket and unknown sender are 404s")
         void unknownIds() {
-            when(ticketService.findOrThrow(TICKET_ID)).thenThrow(new TicketNotFoundException(TICKET_ID));
+            when(userService.findOrThrow(CUSTOMER_ID)).thenReturn(customer);
+            when(ticketService.findVisibleOrThrow(TICKET_ID, customer)).thenThrow(new TicketNotFoundException(TICKET_ID));
             assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), CUSTOMER_ID))
                     .isInstanceOf(TicketNotFoundException.class);
 
-            org.mockito.Mockito.reset(ticketService);
-            when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+            org.mockito.Mockito.reset(ticketService, userService);
             when(userService.findOrThrow(CUSTOMER_ID)).thenThrow(new UserNotFoundException(CUSTOMER_ID));
             assertThatThrownBy(() -> messageService.postMessage(TICKET_ID, new PostMessageRequest("Hi"), CUSTOMER_ID))
                     .isInstanceOf(UserNotFoundException.class);
