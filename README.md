@@ -17,11 +17,13 @@ A RESTful backend API for managing support tickets across multiple organizations
   - [Organization](#organization)
   - [User](#user)
   - [Ticket](#ticket)
+  - [Message](#message)
 - [Enums](#enums)
 - [API Reference](#api-reference)
   - [Organizations](#organizations-api)
   - [Users](#users-api)
   - [Tickets](#tickets-api)
+  - [Messages](#messages-api)
 - [DTOs](#dtos)
 - [Exception Handling](#exception-handling)
 - [Testing](#testing)
@@ -57,6 +59,10 @@ Ticket numbers are auto-generated in the format `HD-2026-XXXXXX` using the datab
 Controllers never accept or return JPA entities. Every request is bound to a
 validated request record and every response is built by an explicit mapper, so
 passwords, Hibernate proxy fields and circular references cannot reach a client.
+
+Each ticket carries its own conversation. The customer and the assigned agent
+exchange messages on the ticket, and administrators of the ticket's
+organization can read along.
 
 Ticket status never changes through a generic update. Each transition is a
 named business action in `TicketWorkflowService` with its own rules:
@@ -108,6 +114,14 @@ helpdesk-ticketing-system/
 │   │   │   │   ├── OrganizationNotFoundException.java
 │   │   │   │   ├── TicketNotFoundException.java
 │   │   │   │   └── UserNotFoundException.java
+│   │   │   ├── message/
+│   │   │   │   ├── controller/MessageController.java
+│   │   │   │   ├── dto/MessageResponse.java
+│   │   │   │   ├── dto/PostMessageRequest.java
+│   │   │   │   ├── entity/Message.java
+│   │   │   │   ├── mapper/MessageMapper.java
+│   │   │   │   ├── repository/MessageRepository.java
+│   │   │   │   └── service/MessageService.java
 │   │   │   ├── organization/
 │   │   │   │   ├── controller/OrganizationController.java
 │   │   │   │   ├── dto/CreateOrganizationRequest.java
@@ -144,6 +158,7 @@ helpdesk-ticketing-system/
 │   │   │       ├── entity/TicketStatus.java
 │   │   │       ├── mapper/TicketMapper.java
 │   │   │       ├── repository/TicketRepository.java
+│   │   │       ├── service/TicketParticipants.java     # who is customer / agent / admin of a ticket
 │   │   │       ├── service/TicketService.java          # CRUD
 │   │   │       └── service/TicketWorkflowService.java  # status transitions
 │   │   └── resources/
@@ -154,9 +169,12 @@ helpdesk-ticketing-system/
 │       │   ├── MutableClock.java                  # test clock that can be advanced
 │       │   ├── HelpDeskApplicationTests.java
 │       │   ├── exception/FrameworkErrorMappingTest.java
+│       │   ├── message/controller/MessageControllerTest.java
+│       │   ├── message/service/MessageServiceTest.java
 │       │   ├── TicketApiIntegrationTest.java      # end-to-end, H2
 │       │   ├── TicketAgentWorkflowIntegrationTest.java
 │       │   ├── TicketAssignmentIntegrationTest.java
+│       │   ├── TicketMessagingIntegrationTest.java
 │       │   ├── TicketReopenCloseIntegrationTest.java
 │       │   ├── ticket/config/TicketWorkflowPropertiesTest.java
 │       │   ├── ticket/controller/TicketControllerTest.java
@@ -227,6 +245,19 @@ Table: `tickets`
 | `updatedAt` | LocalDateTime | Last update timestamp |
 | `resolvedAt` | LocalDateTime | When ticket was resolved |
 | `closedAt` | LocalDateTime | When ticket was closed |
+
+### Message
+
+Table: `messages`, indexed on `(ticket_id, created_at)` for reading a thread
+in order.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Long | PK, auto-generated |
+| `ticket` | Ticket | `@ManyToOne`, required. Deleted together with its ticket (`ON DELETE CASCADE`) |
+| `sender` | User | `@ManyToOne`, nullable. If the user is deleted the message stays and `sender` becomes `NULL` |
+| `content` | String | The message text, up to 5000 characters, trimmed |
+| `createdAt` | LocalDateTime | When the message was posted |
 
 ---
 
@@ -790,9 +821,94 @@ Response `200 OK`: the updated ticket.
 DELETE /api/tickets/{id}
 ```
 
-Response `204 No Content`: no body.
+Response `204 No Content`: no body. The ticket's messages are deleted with it.
 
 Response `404 Not Found`: standard error body.
+
+---
+
+### Messages API
+
+Every ticket has its own conversation between the customer who opened it and
+the agent currently assigned to it.
+
+| | Post | Read |
+|---|---|---|
+| The ticket's customer | ✅ | ✅ |
+| The ticket's current assigned agent | ✅ | ✅ |
+| `ORG_ADMIN` of the ticket's organization | ❌ | ✅ read-only oversight |
+| Anyone else, including other customers, unassigned or previously assigned agents, and other organizations' admins | ❌ | ❌ |
+
+Inactive users can do neither. Access follows assignment: when a ticket is
+reassigned, the previous agent loses access to its conversation and the new
+agent can read the whole history.
+
+#### Post Message
+
+```
+POST /api/tickets/{ticketId}/messages
+Content-Type: application/json
+```
+
+Request body:
+```json
+{
+  "senderId": 1,
+  "content": "The printer shows error 50.4 after the paper jam."
+}
+```
+
+Response `201 Created`:
+```json
+{
+  "id": 12,
+  "ticketId": 1,
+  "sender": {
+    "id": 1,
+    "name": "Dana Customer",
+    "email": "dana@acme.com",
+    "role": "CUSTOMER"
+  },
+  "content": "The printer shows error 50.4 after the paper jam.",
+  "createdAt": "2026-09-14T12:00:00"
+}
+```
+
+- Leading and trailing whitespace is trimmed.
+- The customer can post on an `OPEN` ticket before any agent is assigned, to
+  add detail.
+- Posting on a `CLOSED` ticket is refused with `409`
+  (`Cannot post a message on a CLOSED ticket; reopen it first`). The customer
+  reopens the ticket to continue the conversation.
+
+| Failure | Status |
+|---|---|
+| Missing `senderId`, blank content, or content over 5000 characters | `400 Bad Request` |
+| Unknown ticket or sender | `404 Not Found` |
+| Sender is not the ticket's customer or current assigned agent, or is inactive | `403 Forbidden` |
+| Ticket is `CLOSED` | `409 Conflict` |
+
+#### Get Messages
+
+```
+GET /api/tickets/{ticketId}/messages?userId=1
+```
+
+Returns the conversation oldest first. A `CLOSED` ticket's conversation stays
+readable. Senders are loaded in the same query as the messages, so the cost of
+reading a thread does not grow with the number of participants.
+
+`sender` is `null` for a message whose author's account has been deleted.
+
+| Failure | Status |
+|---|---|
+| Missing `userId` | `400 Bad Request` |
+| Unknown ticket or user | `404 Not Found` |
+| User may not read this ticket's messages, or is inactive | `403 Forbidden` |
+
+> **Interim identity:** `senderId` and `userId` identify the acting user only
+> until authentication exists. The rules are enforced against that user, but
+> the claim to be that user is not verified.
 
 ---
 
@@ -853,6 +969,13 @@ adding a field to an entity can never silently widen an API response.
 |---|---|---|
 | `customerId` | Long | required; interim until authentication |
 
+#### PostMessageRequest
+
+| Field | Type | Constraints |
+|---|---|---|
+| `senderId` | Long | required; interim until authentication |
+| `content` | String | required, not blank, max 5000 |
+
 #### AgentActionRequest
 
 Used by `start` and `resolve`.
@@ -878,6 +1001,7 @@ Used by `start` and `resolve`.
 | `UserResponse` | `id`, `name`, `email`, `phoneNumber`, `role`, `active`, `organization` |
 | `UserSummaryResponse` | `id`, `name`, `email`, `role` — used when nested in another response |
 | `TicketResponse` | all ticket fields, with `customer`, `assignedAgent` and `organization` as summaries |
+| `MessageResponse` | `id`, `ticketId`, `sender` (summary, or `null`), `content`, `createdAt` |
 
 `password` is not a component of any response record, so it cannot be
 serialised even by accident.
@@ -959,10 +1083,13 @@ needs neither a live database nor any environment variables:
 | `TicketWorkflowServiceTest` | unit (Mockito) | every assignment rule: valid assignment and reassignment, idempotent same-agent assign, each non-admin role, inactive and cross-organization admin, each non-agent role, inactive and cross-organization agent, each non-assignable status, and that nothing is saved on any rejection; start and resolve by the assigned agent, refusal of every other actor (other agent, admin, customer, unassigned ticket, deactivated agent, changed role), every invalid source status, and `resolvedAt` handling; reassigning `IN_PROGRESS` tickets back to `ASSIGNED` without undoing same-agent progress; reassigning and restarting `REOPENED` tickets; reopen and close by every allowed and refused actor, every invalid status, reopen-window and admin-close-window boundaries against a fixed clock |
 | `TicketWorkflowPropertiesTest` | unit (Spring `Binder`) | `helpdesk.tickets.*` defaults, overrides from environment variables named as documented, rejection of negative windows |
 | `FrameworkErrorMappingTest` | web slice (`@WebMvcTest`) | unknown URL, unsupported method and unsupported content type keep their real `404`/`405`/`415` status in the standard error shape, without leaking class names |
+| `MessageServiceTest` | unit (Mockito) | posting by customer and assigned agent, trimming, posting on an unassigned ticket, posting allowed in every status except `CLOSED`; admin, unassigned agent, other customer and inactive users refused; reading by customer, agent and admin, refusal of unrelated and cross-organization users, closed threads readable, deleted senders mapped to `null` |
+| `MessageControllerTest` | web slice (`@WebMvcTest`) | `201` and `200` responses, validation of sender and content, missing `userId` as `400`, `403` and `409` mapping |
 | `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assign, start, resolve, close and reopen mapped to `200`/`400`/`403`/`409` |
 | `TicketApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full organization to user to ticket flow through the real web, service and persistence layers, asserting no `password` or `hibernateLazyInitializer` anywhere in the payload |
 | `TicketAssignmentIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | assignment persisted and readable back, reassignment, and that cross-organization agents, cross-organization admins, non-admin actors, non-agent targets and unknown ids are rejected with the stored ticket left `OPEN` and unassigned |
 | `TicketAgentWorkflowIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full `OPEN` → `ASSIGNED` → `IN_PROGRESS` → `RESOLVED` lifecycle persisted; resolve-before-start, double start and double resolve refused; other agents and the admin forbidden; reassignment transferring ownership, including of in-progress work; no reassignment once resolved |
+| `TicketMessagingIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | a customer–agent conversation read back in order by all three allowed readers; admin read-only; outsiders refused; access moving with reassignment; closed ticket frozen until reopened; trimming and validation; deleting a ticket deleting its messages; and a query-count check that reading a thread does not run a query per sender (Hibernate statistics) |
 | `TicketReopenCloseIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | close, reopen, re-resolve and close again with `reopenCount` persisted; admin close refused before 3 hours and allowed after; reopen refused after 7 days; reassignment of a reopened ticket; other customers, the agent and a cross-organization admin forbidden. Time windows are tested by advancing a `MutableClock` rather than waiting |
 
 ---

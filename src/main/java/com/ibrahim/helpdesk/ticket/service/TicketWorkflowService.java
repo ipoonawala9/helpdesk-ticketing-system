@@ -149,7 +149,7 @@ public class TicketWorkflowService {
         Ticket ticket = ticketService.findOrThrow(ticketId);
         User actor = userService.findOrThrow(request.customerId());
 
-        if (!isTicketCustomer(ticket, actor)) {
+        if (!TicketParticipants.isCustomer(ticket, actor)) {
             throw new ForbiddenOperationException("Only the customer who opened this ticket can reopen it");
         }
         requireActive(actor, "reopen");
@@ -186,9 +186,8 @@ public class TicketWorkflowService {
         Ticket ticket = ticketService.findOrThrow(ticketId);
         User actor = userService.findOrThrow(request.userId());
 
-        boolean isCustomer = isTicketCustomer(ticket, actor);
-        boolean isAdmin = actor.getRole() == UserRole.ORG_ADMIN
-                && belongsTo(actor, ticket.getOrganization());
+        boolean isCustomer = TicketParticipants.isCustomer(ticket, actor);
+        boolean isAdmin = TicketParticipants.isOrgAdmin(ticket, actor);
 
         if (!isCustomer && !isAdmin) {
             throw new ForbiddenOperationException(
@@ -231,22 +230,13 @@ public class TicketWorkflowService {
         }
     }
 
-    private static boolean isTicketCustomer(Ticket ticket, User actor) {
-        return actor.getRole() == UserRole.CUSTOMER
-                && ticket.getCustomer() != null
-                && Objects.equals(ticket.getCustomer().getId(), actor.getId());
-    }
-
     /**
      * Only the agent currently holding the ticket may act on it. Role and
      * active flag are re-checked because either may have changed since the
      * ticket was assigned.
      */
     private static void requireAssignedAgent(Ticket ticket, User actor, String action) {
-        boolean isAssignedAgent = ticket.getAssignedAgent() != null
-                && Objects.equals(ticket.getAssignedAgent().getId(), actor.getId());
-
-        if (!isAssignedAgent || actor.getRole() != UserRole.SUPPORT_AGENT) {
+        if (!TicketParticipants.isAssignedAgent(ticket, actor)) {
             throw new ForbiddenOperationException(
                     "Only the assigned agent can " + action + " this ticket");
         }
@@ -258,7 +248,7 @@ public class TicketWorkflowService {
             throw new ForbiddenOperationException("Only organization administrators can assign tickets");
         }
         requireActive(admin, "assign");
-        if (!belongsTo(admin, organization)) {
+        if (!TicketParticipants.belongsTo(admin, organization)) {
             throw new ForbiddenOperationException(
                     "Administrators can only assign tickets from their own organization");
         }
@@ -271,15 +261,9 @@ public class TicketWorkflowService {
         if (!Boolean.TRUE.equals(agent.getActive())) {
             throw new BusinessRuleException("Tickets cannot be assigned to an inactive agent");
         }
-        if (!belongsTo(agent, organization)) {
+        if (!TicketParticipants.belongsTo(agent, organization)) {
             throw new BusinessRuleException("Agent must belong to the ticket's organization");
         }
-    }
-
-    private static boolean belongsTo(User user, Organization organization) {
-        return user.getOrganization() != null
-                && organization != null
-                && Objects.equals(user.getOrganization().getId(), organization.getId());
     }
 
     /** Renders a window as "3 hours", "7 days" or "90 minutes" for error messages. */

@@ -115,6 +115,19 @@ abstract class ApiIntegrationTestSupport {
                         """.formatted(userId)));
     }
 
+    protected ResultActions postMessage(long ticketId, long senderId, String content) throws Exception {
+        return mockMvc.perform(post("/api/tickets/{id}/messages", ticketId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"senderId":%d,"content":"%s"}
+                        """.formatted(senderId, content)));
+    }
+
+    protected ResultActions getMessages(long ticketId, long userId) throws Exception {
+        return mockMvc.perform(get("/api/tickets/{id}/messages", ticketId)
+                .param("userId", String.valueOf(userId)));
+    }
+
     protected String fetchTicket(long ticketId) throws Exception {
         return mockMvc.perform(get("/api/tickets/{id}", ticketId))
                 .andExpect(status().isOk())
