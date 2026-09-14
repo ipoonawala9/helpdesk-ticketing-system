@@ -23,11 +23,13 @@ A RESTful backend API for managing support tickets across multiple organizations
 - [Authentication & Authorization](#authentication--authorization)
 - [Multi-Tenant Isolation](#multi-tenant-isolation)
 - [API Reference](#api-reference)
+  - [Lists: paging, sorting, filtering and search](#lists-paging-sorting-filtering-and-search)
   - [Organizations](#organizations-api)
   - [Users](#users-api)
   - [Tickets](#tickets-api)
   - [Messages](#messages-api)
 - [DTOs](#dtos)
+- [Database Constraints and Indexes](#database-constraints-and-indexes)
 - [Exception Handling](#exception-handling)
 - [Testing](#testing)
 - [Configuration](#configuration)
@@ -106,10 +108,10 @@ A reopened ticket goes back to its agent, who starts work on it again.
 | Validation | Jakarta Bean Validation |
 | Security | Spring Security 7, OAuth2 Resource Server (JWT, HS256), BCrypt |
 | Boilerplate reduction | Lombok |
-| API Docs | Postman |
+| API Docs | springdoc-openapi (OpenAPI 3, Swagger UI) |
 | Build tool | Maven (Maven Wrapper included) |
 | Containerization | Docker (eclipse-temurin:25-jdk) |
-| Testing | JUnit 5, Mockito, AssertJ, MockMvc, Spring Security Test, H2 (in-memory) |
+| Testing | JUnit 5, Mockito, AssertJ, MockMvc, Spring Security Test, H2 (in-memory), Testcontainers (PostgreSQL 17) |
 
 ---
 
@@ -121,6 +123,10 @@ helpdesk-ticketing-system/
 │   ├── main/
 │   │   ├── java/com/ibrahim/helpdesk/
 │   │   │   ├── HelpDeskApplication.java          # Entry point
+│   │   │   ├── common/
+│   │   │   │   ├── openapi/OpenApiConfig.java    # bearer auth scheme, standard error responses
+│   │   │   │   ├── paging/PageRequests.java      # validated page/size/sort, safe LIKE patterns
+│   │   │   │   └── paging/PageResponse.java      # JSON page envelope
 │   │   │   ├── exception/
 │   │   │   │   ├── ApiErrorResponse.java         # single error shape
 │   │   │   │   ├── BusinessRuleException.java
@@ -171,6 +177,7 @@ helpdesk-ticketing-system/
 │   │   │   │   ├── entity/UserRole.java
 │   │   │   │   ├── mapper/UserMapper.java
 │   │   │   │   ├── repository/UserRepository.java
+│   │   │   │   ├── repository/UserSpecifications.java
 │   │   │   │   └── service/UserService.java
 │   │   │   └── ticket/
 │   │   │       ├── config/TicketWorkflowConfig.java      # Clock bean
@@ -179,6 +186,7 @@ helpdesk-ticketing-system/
 │   │   │       ├── dto/AssignTicketRequest.java
 │   │   │       ├── dto/CreateTicketRequest.java
 │   │   │       ├── dto/TicketResponse.java
+│   │   │       ├── dto/TicketSearchCriteria.java
 │   │   │       ├── dto/UpdateTicketRequest.java
 │   │   │       ├── entity/Ticket.java
 │   │   │       ├── entity/TicketCategory.java
@@ -190,6 +198,7 @@ helpdesk-ticketing-system/
 │   │   │       ├── priority/TicketPriorityBackfill.java         # fills missing priorities on startup
 │   │   │       ├── priority/TicketPriorityPolicy.java           # replaceable interface
 │   │   │       ├── repository/TicketRepository.java
+│   │   │       ├── repository/TicketSpecifications.java  # tenant scope and list filters
 │   │   │       ├── service/TicketParticipants.java     # who is customer / agent / admin of a ticket
 │   │   │       ├── service/TicketService.java          # CRUD
 │   │   │       └── service/TicketWorkflowService.java  # status transitions
@@ -200,7 +209,10 @@ helpdesk-ticketing-system/
 │       │   ├── AccessControlIntegrationTest.java
 │       │   ├── ApiIntegrationTestSupport.java     # shared end-to-end helpers, real tokens per user
 │       │   ├── AuthIntegrationTest.java
+│       │   ├── DatabaseConstraintsIntegrationTest.java
 │       │   ├── MutableClock.java                  # test clock that can be advanced
+│       │   ├── OpenApiIntegrationTest.java
+│       │   ├── organization/controller/OrganizationControllerTest.java
 │       │   ├── SecurityStartupTasksIntegrationTest.java
 │       │   ├── TenantIsolationIntegrationTest.java
 │       │   ├── security/jwt/JwtPropertiesTest.java
@@ -215,14 +227,17 @@ helpdesk-ticketing-system/
 │       │   ├── TicketMessagingIntegrationTest.java
 │       │   ├── TicketPriorityIntegrationTest.java
 │       │   ├── TicketReopenCloseIntegrationTest.java
+│       │   ├── TicketSearchIntegrationTest.java
 │       │   ├── ticket/config/TicketWorkflowPropertiesTest.java
 │       │   ├── ticket/controller/TicketControllerTest.java
 │       │   ├── ticket/priority/RuleBasedTicketPriorityPolicyTest.java
 │       │   ├── ticket/service/TicketServiceTest.java
 │       │   ├── ticket/service/TicketWorkflowServiceTest.java
+│       │   ├── user/controller/UserControllerTest.java
 │       │   └── user/service/UserServiceTest.java
 │       └── resources/
-│           └── application.properties             # in-memory H2
+│           ├── application.properties             # in-memory H2 (default)
+│           └── application-postgres.properties    # PostgreSQL 17 via Testcontainers
 ├── ss/                                            # Postman screenshots
 ├── Dockerfile
 ├── mvnw / mvnw.cmd
@@ -278,7 +293,7 @@ Table: `tickets`
 | `priority` | TicketPriority (enum) | Urgency level, always calculated by the server (see [Automatic Priority](#automatic-priority)) |
 | `category` | TicketCategory (enum) | Type of issue |
 | `customer` | User | `@ManyToOne` — the user who raised the ticket |
-| `assignedAgent` | User | `@ManyToOne` — the support agent handling it |
+| `assignedAgent` | User | `@ManyToOne`, nullable — the support agent handling it. If that agent's account is deleted the ticket is kept and becomes unassigned (`ON DELETE SET NULL`) |
 | `organization` | Organization | `@ManyToOne` — auto-inherited from customer |
 | `reopenCount` | Integer | Number of times ticket was reopened |
 | `createdAt` | LocalDateTime | Ticket creation timestamp |
@@ -590,6 +605,73 @@ Every endpoint below except login requires `Authorization: Bearer <token>`.
 See [Authentication & Authorization](#authentication--authorization) for which
 roles may call each one.
 
+### Interactive documentation
+
+The full contract is published as OpenAPI 3 and can be tried out in the
+browser:
+
+| | |
+|---|---|
+| Swagger UI | `/swagger-ui.html` |
+| OpenAPI document | `/v3/api-docs` |
+
+Both are public. In Swagger UI, call `POST /api/auth/login`, press
+**Authorize**, and paste the `accessToken`; every other operation then sends it.
+Each operation lists its possible error responses, all in the `ApiErrorResponse`
+shape.
+
+### Lists: paging, sorting, filtering and search
+
+`GET /api/tickets`, `GET /api/users` and `GET /api/organizations` return one
+page at a time:
+
+```json
+{
+  "content": [ ... ],
+  "page": 0,
+  "size": 20,
+  "totalElements": 57,
+  "totalPages": 3,
+  "first": true,
+  "last": false
+}
+```
+
+| Parameter | Default | Rules |
+|---|---|---|
+| `page` | `0` | zero-based, `0` or greater |
+| `size` | `20` | `1` to `100` |
+| `sort` | per list, see below | `field` or `field,asc` / `field,desc`; only the listed fields are accepted |
+| `q` | none | free-text search, at most 100 characters, case-insensitive; `%` and `_` are matched literally |
+
+Rows with equal sort values are ordered by id, so paging never repeats or skips
+a row. Invalid values are a `400` explaining what is allowed. Filters and search
+only ever narrow the caller's [scope](#multi-tenant-isolation); they can never
+widen it.
+
+| List | Sort fields | Default sort | Search `q` matches | Filters |
+|---|---|---|---|---|
+| Tickets | `createdAt`, `updatedAt`, `priority`, `status`, `ticketNumber`, `title` | `createdAt,desc` | ticket number, title, description | `status`, `priority`, `category` (each repeatable or comma-separated), `customerId`, `assignedAgentId`, `unassigned=true`, `organizationId` |
+| Users | `name`, `email`, `role` | `name,asc` | name, email | `role`, `active`, `organizationId` |
+| Organizations | `name`, `domain`, `industry` | `name,asc` | name, domain | |
+
+- Sorting by `priority` follows severity (`LOW` < `MEDIUM` < `HIGH` <
+  `CRITICAL`) and by `status` follows the lifecycle (`OPEN`, `ASSIGNED`,
+  `IN_PROGRESS`, `REOPENED`, `RESOLVED`, `CLOSED`), not alphabetical order.
+- `organizationId` naming an organization other than the caller's own is
+  `404` for everyone except a `SUPER_ADMIN`.
+- `assignedAgentId` together with `unassigned=true` is a `400`.
+
+Examples:
+
+```
+GET /api/tickets?status=OPEN&status=REOPENED&sort=priority,desc
+GET /api/tickets?unassigned=true&category=HARDWARE,NETWORK
+GET /api/tickets?q=printer&page=1&size=10
+GET /api/users?role=SUPPORT_AGENT&active=true&q=sam
+GET /api/organizations?q=acme
+```
+
 ---
 
 ### Organizations API
@@ -633,10 +715,11 @@ Response `201 Created`:
 `SUPER_ADMIN` only.
 
 ```
-GET /api/organizations
+GET /api/organizations?q=acme&sort=name,asc&page=0&size=20
 ```
 
-Response `200 OK`: array of organization objects.
+Response `200 OK`: a [page](#lists-paging-sorting-filtering-and-search) of
+organization objects.
 
 ---
 
@@ -740,11 +823,13 @@ Response `404 Not Found` (if org not found):
 
 ```
 GET /api/users
-GET /api/users?role=SUPPORT_AGENT
-GET /api/users?organizationId=2&role=CUSTOMER
+GET /api/users?role=SUPPORT_AGENT&active=true
+GET /api/users?organizationId=2&role=CUSTOMER&q=dana
 ```
 
-`SUPER_ADMIN` and `ORG_ADMIN` only. Returns users ordered by name.
+`SUPER_ADMIN` and `ORG_ADMIN` only. Returns a
+[page](#lists-paging-sorting-filtering-and-search) of users, ordered by name by
+default.
 
 - An `ORG_ADMIN` always gets their own organization's users. `organizationId`
   may be omitted or be their own; any other organization is `404`.
@@ -753,8 +838,8 @@ GET /api/users?organizationId=2&role=CUSTOMER
 - `role` narrows the list, e.g. `?role=SUPPORT_AGENT` for the agents a ticket
   can be assigned to.
 
-Response `200 OK`: array of user objects, without passwords. Organizations are
-loaded in the same query, so the list does not issue one query per
+Response `200 OK`: a page of user objects, without passwords. Organizations
+are loaded in the same query, so the list does not issue one query per
 organization.
 
 ---
@@ -838,13 +923,17 @@ Response `403 Forbidden` if the authenticated user is not a `CUSTOMER`.
 
 ---
 
-#### Get All Tickets
+#### List Tickets
 
 ```
 GET /api/tickets
+GET /api/tickets?status=OPEN&unassigned=true&sort=priority,desc
+GET /api/tickets?q=HD-2026-000042
 ```
 
-Every role can call this and gets only the tickets in its scope, newest first:
+Every role can call this and gets a
+[page](#lists-paging-sorting-filtering-and-search) of only the tickets in its
+scope, newest first by default:
 
 | Role | Tickets returned |
 |---|---|
@@ -856,7 +945,7 @@ Every role can call this and gets only the tickets in its scope, newest first:
 The customer, assigned agent and organization of every ticket are loaded in
 the same query, so the number of queries does not grow with the list.
 
-Response `200 OK`: array of ticket objects.
+Response `200 OK`: a page of ticket objects.
 
 ---
 
@@ -1264,11 +1353,50 @@ adding a field to an entity can never silently widen an API response.
 | `UserResponse` | `id`, `name`, `email`, `phoneNumber`, `role`, `active`, `organization` |
 | `UserSummaryResponse` | `id`, `name`, `email`, `role` — used when nested in another response |
 | `TicketResponse` | all ticket fields, with `customer`, `assignedAgent` and `organization` as summaries |
+| `PageResponse<T>` | `content`, `page`, `size`, `totalElements`, `totalPages`, `first`, `last` |
 | `LoginResponse` | `accessToken`, `tokenType` (`Bearer`), `expiresAt`, `user` (`UserResponse`) |
 | `MessageResponse` | `id`, `ticketId`, `sender` (summary, or `null`), `content`, `createdAt` |
 
 `password` is not a component of any response record, so it cannot be
 serialised even by accident.
+
+---
+
+## Database Constraints and Indexes
+
+The rules that matter most are enforced by the database itself, not only by
+application code, and are tested with plain SQL against both H2 and
+PostgreSQL.
+
+| Rule | Enforced by |
+|---|---|
+| Deleting an agent keeps their tickets, now unassigned | `tickets.assigned_agent_id` foreign key `ON DELETE SET NULL` |
+| Deleting a user keeps their messages, without a sender | `messages.sender_id` foreign key `ON DELETE SET NULL` |
+| Deleting a ticket deletes its messages | `messages.ticket_id` foreign key `ON DELETE CASCADE` |
+| A customer with tickets, or an organization with users or tickets, cannot be deleted | plain foreign keys (restrict) |
+| Ticket numbers are unique | `uk_tickets_ticket_number` |
+| Emails are unique | unique constraint on `users.email` |
+| Required fields are present | `NOT NULL` on ticket title, description, status, priority, category, customer, organization, reopen count and timestamps; user name, email, password, role and active flag; all organization fields |
+| Enum columns hold only known values | check constraints generated for status, priority, category and role |
+
+Indexes back each role's scoped list:
+
+| Index | Serves |
+|---|---|
+| `idx_tickets_organization_created_at` | an admin's organization ticket list, newest first |
+| `idx_tickets_customer_created_at` | a customer's ticket list |
+| `idx_tickets_assigned_agent_created_at` | an agent's ticket list |
+| `idx_tickets_status` | status filters |
+| `idx_users_organization_role` | organization user lists, e.g. agents to assign |
+| `idx_messages_ticket_created_at` | reading a ticket's conversation in order |
+
+The schema is generated by Hibernate (`ddl-auto=update`). On a **new** database
+every constraint and index above is created. On a database created **before**
+these were added, `update` adds missing tables and columns but is not relied on
+to add indexes, and it does not add `NOT NULL`, unique or `ON DELETE` rules to
+existing columns and foreign keys. For a development or demo database the simplest fix is to recreate the
+schema. For a database with data worth keeping, apply the changes with a
+migration tool such as Flyway before relying on them.
 
 ---
 
@@ -1338,12 +1466,23 @@ echoed back because it exposes internal type names.
 
 ## Testing
 
-The suite runs against in-memory H2 in PostgreSQL compatibility mode, so it
-needs neither a live database nor any environment variables:
+By default the suite runs against in-memory H2 in PostgreSQL compatibility
+mode, so it needs neither a live database nor any environment variables:
 
 ```bash
 ./mvnw test
 ```
+
+The same suite runs against a real **PostgreSQL 17** container, started
+automatically by Testcontainers, when Docker is running:
+
+```bash
+SPRING_PROFILES_ACTIVE=postgres ./mvnw test
+```
+
+Both runs are expected to pass. The PostgreSQL run is the one that proves
+database-specific behaviour: constraints, `ON DELETE` rules, index creation,
+`LIKE` escaping and sort order.
 
 | Test | Kind | Covers |
 |---|---|---|
@@ -1355,6 +1494,8 @@ needs neither a live database nor any environment variables:
 | `MessageServiceTest` | unit (Mockito) | posting by customer and assigned agent, trimming, posting on an unassigned ticket, posting allowed in every status except `CLOSED`; admin, unassigned agent, other customer and inactive users refused; reading by customer, agent and admin, refusal of unrelated and cross-organization users, closed threads readable, deleted senders mapped to `null` |
 | `MessageControllerTest` | web slice (`@WebMvcTest`) | `201` and `200` responses, validation of content, sender taken from the token rather than the body, role rules, `403` and `409` mapping |
 | `RuleBasedTicketPriorityPolicyTest` | unit | every category baseline; every incident, urgency, low-urgency and calm phrase in the lists; precedence between them; whole-word, case-insensitive and typographic-apostrophe matching; the documented negation limitation; reopen escalation and its `HIGH` ceiling; determinism and null safety |
+| `UserControllerTest` | web slice (`@WebMvcTest` with the real `SecurityConfig`) | create, list and get users: role rules, validation of every field, `409` for duplicate emails, binding of filters and paging, sort whitelist, `401` without a token |
+| `OrganizationControllerTest` | web slice (`@WebMvcTest` with the real `SecurityConfig`) | super-admin-only create and list, search and paging binding, `404` mapping, body validation |
 | `TicketControllerTest` | web slice (`@WebMvcTest` with the real `SecurityConfig`) | `401` without or with a malformed token; every role refused by every endpoint's `@PreAuthorize`; the authenticated user's id passed to the services; status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assign, start, resolve, close and reopen mapped to `200`/`400`/`403`/`409` |
 | `AuthIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | login success and the token's minimal claims; case-insensitive email; identical `401` for wrong password, unknown email and inactive account; hashed passwords at rest; rejection of missing, expired, forged-signature, wrong-issuer and unsigned tokens; deactivation and role changes applying to existing tokens immediately; bootstrap super admin login; public API docs |
 | `AccessControlIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | creating users as each role, within and across organizations, duplicate emails; organization and user visibility; reading, editing, deleting and listing tickets as each kind of user, with out-of-scope reads indistinguishable from missing ids |
@@ -1366,6 +1507,9 @@ needs neither a live database nor any environment variables:
 | `TicketAgentWorkflowIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full `OPEN` → `ASSIGNED` → `IN_PROGRESS` → `RESOLVED` lifecycle persisted; resolve-before-start, double start and double resolve refused; other agents and the admin forbidden; reassignment transferring ownership, including of in-progress work; no reassignment once resolved |
 | `TicketMessagingIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | a customer–agent conversation read back in order by all three allowed readers; admin read-only; outsiders refused; access moving with reassignment; closed ticket frozen until reopened; trimming and validation; deleting a ticket deleting its messages; and a query-count check that reading a thread does not run a query per sender (Hibernate statistics) |
 | `TicketPriorityIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | priority set on create for each level; a client-supplied `priority` ignored; recalculation on edit in both directions; escalation over three reopens capped at `HIGH`; startup backfill filling only missing priorities |
+| `TicketSearchIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | walking every page without repeats or gaps; priority sorted by severity and status by lifecycle; combined status, category, agent and unassigned filters; search over number, title and description; `%` and `_` matched literally; filters unable to widen scope; user and organization search |
+| `DatabaseConstraintsIntegrationTest` | end-to-end (`@SpringBootTest` + JDBC) | with plain SQL: deleting an agent unassigns their tickets and orphans their messages; customers and organizations in use cannot be deleted; unique ticket numbers and emails; `NOT NULL` on every required column; enum check constraints; presence of every index |
+| `OpenApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | Swagger UI served; bearer JWT scheme required by default; login public; `ApiErrorResponse` documented on error responses; no `currentUserId` parameter leaked; list parameters documented; every operation tagged and summarised |
 | `TicketReopenCloseIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | close, reopen, re-resolve and close again with `reopenCount` persisted; admin close refused before 3 hours and allowed after; reopen refused after 7 days; reassignment of a reopened ticket; other customers, the agent and a cross-organization admin forbidden. Time windows are tested by advancing a `MutableClock` rather than waiting |
 
 ---

@@ -6,6 +6,7 @@ import com.ibrahim.helpdesk.exception.UserNotFoundException;
 import com.ibrahim.helpdesk.organization.entity.Organization;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
+import com.ibrahim.helpdesk.ticket.dto.TicketSearchCriteria;
 import com.ibrahim.helpdesk.ticket.dto.UpdateTicketRequest;
 import com.ibrahim.helpdesk.ticket.entity.Ticket;
 import com.ibrahim.helpdesk.ticket.entity.TicketCategory;
@@ -34,6 +35,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -297,24 +299,58 @@ class TicketServiceTest {
             verify(ticketRepository, never()).findByIdAndOrganizationId(any(), any());
         }
 
+        // Which rows each role's list contains is checked against a real database
+        // in TenantIsolationIntegrationTest; these cover the service's own rules.
+
+        private final org.springframework.data.domain.Pageable firstPage =
+                org.springframework.data.domain.PageRequest.of(0, 20);
+
+        private TicketSearchCriteria withOrganization(Long organizationId) {
+            return new TicketSearchCriteria(java.util.Set.of(), java.util.Set.of(), java.util.Set.of(),
+                    null, null, null, organizationId, null);
+        }
+
         @Test
-        @DisplayName("each role's list comes from its own scoped query")
-        void listsAreScoped() {
+        @DisplayName("the list is always a specification query with the requested page, never an unscoped findAll")
+        void listUsesScopedSpecification() {
             when(userService.findOrThrow(1L)).thenReturn(customer);
-            when(userService.findOrThrow(20L)).thenReturn(agent);
-            when(userService.findOrThrow(10L)).thenReturn(orgAdmin);
-            when(userService.findOrThrow(99L)).thenReturn(superAdmin);
+            when(ticketRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(firstPage)))
+                    .thenReturn(org.springframework.data.domain.Page.empty(firstPage));
 
-            ticketService.listTickets(1L);
-            ticketService.listTickets(20L);
-            ticketService.listTickets(10L);
-            ticketService.listTickets(99L);
+            ticketService.listTickets(1L, TicketSearchCriteria.none(), firstPage);
 
-            verify(ticketRepository).findByCustomerIdOrderByCreatedAtDescIdDesc(1L);
-            verify(ticketRepository).findByAssignedAgentIdOrderByCreatedAtDescIdDesc(20L);
-            verify(ticketRepository).findByOrganizationIdOrderByCreatedAtDescIdDesc(7L);
-            verify(ticketRepository).findAllByOrderByCreatedAtDescIdDesc();
+            verify(ticketRepository).findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(firstPage));
             verify(ticketRepository, never()).findAll();
+            verify(ticketRepository, never()).findAll(any(org.springframework.data.domain.Pageable.class));
+        }
+
+        @Test
+        @DisplayName("naming another organization is not found for everyone except the super admin")
+        void foreignOrganizationFilter() {
+            when(userService.findOrThrow(10L)).thenReturn(orgAdmin);
+            when(userService.findOrThrow(1L)).thenReturn(customer);
+            when(userService.findOrThrow(99L)).thenReturn(superAdmin);
+            when(ticketRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(firstPage)))
+                    .thenReturn(org.springframework.data.domain.Page.empty(firstPage));
+
+            assertThatThrownBy(() -> ticketService.listTickets(10L, withOrganization(8L), firstPage))
+                    .isInstanceOf(com.ibrahim.helpdesk.exception.OrganizationNotFoundException.class);
+            assertThatThrownBy(() -> ticketService.listTickets(1L, withOrganization(8L), firstPage))
+                    .isInstanceOf(com.ibrahim.helpdesk.exception.OrganizationNotFoundException.class);
+
+            ticketService.listTickets(10L, withOrganization(7L), firstPage);
+            ticketService.listTickets(99L, withOrganization(8L), firstPage);
+        }
+
+        @Test
+        @DisplayName("assignedAgentId together with unassigned=true is a 400")
+        void contradictoryAssignmentFilters() {
+            when(userService.findOrThrow(10L)).thenReturn(orgAdmin);
+
+            assertThatThrownBy(() -> ticketService.listTickets(10L, new TicketSearchCriteria(
+                    java.util.Set.of(), java.util.Set.of(), java.util.Set.of(), null, 20L, true, null, null), firstPage))
+                    .isInstanceOf(com.ibrahim.helpdesk.exception.BusinessRuleException.class)
+                    .hasMessage("assignedAgentId cannot be combined with unassigned=true");
         }
     }
 

@@ -5,6 +5,8 @@ import com.ibrahim.helpdesk.exception.EmailAlreadyInUseException;
 import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.OrganizationNotFoundException;
 import com.ibrahim.helpdesk.exception.UserNotFoundException;
+import com.ibrahim.helpdesk.common.paging.PageRequests;
+import com.ibrahim.helpdesk.common.paging.PageResponse;
 import com.ibrahim.helpdesk.organization.entity.Organization;
 import com.ibrahim.helpdesk.organization.service.OrganizationService;
 import com.ibrahim.helpdesk.user.dto.CreateUserRequest;
@@ -13,13 +15,14 @@ import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.entity.UserRole;
 import com.ibrahim.helpdesk.user.mapper.UserMapper;
 import com.ibrahim.helpdesk.user.repository.UserRepository;
+import com.ibrahim.helpdesk.user.repository.UserSpecifications;
+import org.springframework.data.domain.Pageable;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.EnumSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
@@ -94,14 +97,23 @@ public class UserService {
         return UserMapper.toResponse(target);
     }
 
+    /** API sort names and the user property each one sorts on. */
+    public static final java.util.Map<String, String> SORTABLE_FIELDS = java.util.Map.of(
+            "name", "name",
+            "email", "email",
+            "role", "role");
+
     /**
-     * Users an administrator may see, ordered by name, optionally narrowed to
-     * one role. A SUPER_ADMIN sees every organization and may narrow to one; an
-     * ORG_ADMIN always sees only their own, and naming any other organization
-     * is answered as if it did not exist.
+     * A page of the users an administrator may see, optionally narrowed by
+     * role, active flag and a search on name or email. A SUPER_ADMIN sees every
+     * organization and may narrow to one; an ORG_ADMIN always sees only their
+     * own, and naming any other organization is answered as if it did not
+     * exist.
      */
     @Transactional(readOnly = true)
-    public List<UserResponse> listUsers(Long viewerId, UserRole role, Long organizationId) {
+    public PageResponse<UserResponse> listUsers(
+            Long viewerId, UserRole role, Long organizationId, Boolean active, String query, Pageable pageable) {
+
         User viewer = findOrThrow(viewerId);
 
         Long scope = switch (viewer.getRole()) {
@@ -116,17 +128,9 @@ public class UserService {
             default -> throw new ForbiddenOperationException("Only administrators can list users");
         };
 
-        List<User> users;
-        if (scope == null) {
-            users = role == null
-                    ? userRepository.findAllByOrderByNameAscIdAsc()
-                    : userRepository.findByRoleOrderByNameAscIdAsc(role);
-        } else {
-            users = role == null
-                    ? userRepository.findByOrganizationIdOrderByNameAscIdAsc(scope)
-                    : userRepository.findByOrganizationIdAndRoleOrderByNameAscIdAsc(scope, role);
-        }
-        return users.stream().map(UserMapper::toResponse).toList();
+        var users = userRepository.findAll(
+                UserSpecifications.matching(scope, role, active, PageRequests.searchTerm(query)), pageable);
+        return PageResponse.of(users, UserMapper::toResponse);
     }
 
     /** A user who belongs to the given organization; anyone else is reported as not found. */

@@ -81,7 +81,16 @@ class TenantIsolationIntegrationTest extends ApiIntegrationTestSupport {
         String body = mockMvc.perform(get("/api/tickets").with(viewer))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        return JsonPath.read(body, "$[*].id");
+        return JsonPath.read(body, "$.content[*].id");
+    }
+
+    /** The super admin, listing one organization's tickets via the organizationId filter. */
+    private RequestPostProcessor asSuperAdminFor(long organizationId) {
+        RequestPostProcessor superAdmin = asSuperAdmin();
+        return request -> {
+            request.setParameter("organizationId", String.valueOf(organizationId));
+            return superAdmin.postProcessRequest(request);
+        };
     }
 
     private static List<Integer> ids(long... ids) {
@@ -117,7 +126,10 @@ class TenantIsolationIntegrationTest extends ApiIntegrationTestSupport {
         @Test
         @DisplayName("the super admin sees tickets of every organization")
         void superAdmin() throws Exception {
-            assertThat(ticketIdsVisibleTo(asSuperAdmin())).containsAll(ids(t1, t2, t3, t4));
+            // The shared test database holds other tests' tickets too, so look at
+            // these two organizations rather than the first page of everything.
+            assertThat(ticketIdsVisibleTo(asSuperAdminFor(acme))).containsExactlyElementsOf(ids(t3, t2, t1));
+            assertThat(ticketIdsVisibleTo(asSuperAdminFor(globex))).containsExactlyElementsOf(ids(t4));
         }
 
         @Test
@@ -192,9 +204,9 @@ class TenantIsolationIntegrationTest extends ApiIntegrationTestSupport {
         private List<Integer> userIds(RequestPostProcessor viewer, String query) throws Exception {
             String body = mockMvc.perform(get("/api/users" + query).with(viewer))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$[*].password").isEmpty())
+                    .andExpect(jsonPath("$.content[*].password").isEmpty())
                     .andReturn().getResponse().getContentAsString();
-            return JsonPath.read(body, "$[*].id");
+            return JsonPath.read(body, "$.content[*].id");
         }
 
         @Test
@@ -219,7 +231,8 @@ class TenantIsolationIntegrationTest extends ApiIntegrationTestSupport {
         void superAdmin() throws Exception {
             assertThat(userIds(asSuperAdmin(), "?organizationId=" + globex))
                     .containsExactlyInAnyOrderElementsOf(ids(globexAdmin, customerG1, agentZ));
-            assertThat(userIds(asSuperAdmin(), "?role=ORG_ADMIN")).containsAll(ids(acmeAdmin, globexAdmin));
+            assertThat(userIds(asSuperAdmin(), "?role=ORG_ADMIN&organizationId=" + acme))
+                    .containsExactlyElementsOf(ids(acmeAdmin));
         }
 
         @Test

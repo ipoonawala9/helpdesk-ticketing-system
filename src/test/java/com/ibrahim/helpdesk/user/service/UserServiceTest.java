@@ -30,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -320,41 +321,46 @@ class UserServiceTest {
             verify(userRepository, never()).findById(3L);
         }
 
-        @Test
-        @DisplayName("an org admin's list is always their own organization, optionally by role")
-        void orgAdminList() {
-            when(userRepository.findById(ORG_ADMIN_ID)).thenReturn(Optional.of(orgAdmin));
+        private final org.springframework.data.domain.Pageable firstPage =
+                org.springframework.data.domain.PageRequest.of(0, 20);
 
-            userService.listUsers(ORG_ADMIN_ID, null, null);
-            userService.listUsers(ORG_ADMIN_ID, UserRole.SUPPORT_AGENT, 7L);
-
-            verify(userRepository).findByOrganizationIdOrderByNameAscIdAsc(7L);
-            verify(userRepository).findByOrganizationIdAndRoleOrderByNameAscIdAsc(7L, UserRole.SUPPORT_AGENT);
-            verify(userRepository, never()).findAllByOrderByNameAscIdAsc();
+        private void stubPage() {
+            when(userRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(firstPage)))
+                    .thenReturn(org.springframework.data.domain.Page.empty(firstPage));
         }
 
         @Test
-        @DisplayName("an org admin naming another organization gets not found")
+        @DisplayName("an org admin may list their own organization, named or not")
+        void orgAdminList() {
+            when(userRepository.findById(ORG_ADMIN_ID)).thenReturn(Optional.of(orgAdmin));
+            stubPage();
+
+            userService.listUsers(ORG_ADMIN_ID, null, null, null, null, firstPage);
+            userService.listUsers(ORG_ADMIN_ID, UserRole.SUPPORT_AGENT, 7L, true, "sam", firstPage);
+
+            verify(userRepository, org.mockito.Mockito.times(2))
+                    .findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(firstPage));
+        }
+
+        @Test
+        @DisplayName("an org admin naming another organization gets not found and nothing is queried")
         void orgAdminOtherOrganization() {
             when(userRepository.findById(ORG_ADMIN_ID)).thenReturn(Optional.of(orgAdmin));
 
-            assertThatThrownBy(() -> userService.listUsers(ORG_ADMIN_ID, null, 8L))
+            assertThatThrownBy(() -> userService.listUsers(ORG_ADMIN_ID, null, 8L, null, null, firstPage))
                     .isInstanceOf(OrganizationNotFoundException.class);
-            verify(userRepository, never()).findByOrganizationIdOrderByNameAscIdAsc(8L);
+            verify(userRepository, never())
+                    .findAll(any(org.springframework.data.jpa.domain.Specification.class), any(org.springframework.data.domain.Pageable.class));
         }
 
         @Test
-        @DisplayName("a super admin lists everyone or one organization, optionally by role")
+        @DisplayName("a super admin may list any organization")
         void superAdminList() {
             when(userRepository.findById(SUPER_ADMIN_ID)).thenReturn(Optional.of(superAdmin));
+            stubPage();
 
-            userService.listUsers(SUPER_ADMIN_ID, null, null);
-            userService.listUsers(SUPER_ADMIN_ID, UserRole.ORG_ADMIN, null);
-            userService.listUsers(SUPER_ADMIN_ID, null, 8L);
-
-            verify(userRepository).findAllByOrderByNameAscIdAsc();
-            verify(userRepository).findByRoleOrderByNameAscIdAsc(UserRole.ORG_ADMIN);
-            verify(userRepository).findByOrganizationIdOrderByNameAscIdAsc(8L);
+            userService.listUsers(SUPER_ADMIN_ID, null, null, null, null, firstPage);
+            userService.listUsers(SUPER_ADMIN_ID, UserRole.ORG_ADMIN, 8L, null, null, firstPage);
         }
 
         @ParameterizedTest(name = "a {0} cannot list users")
@@ -363,7 +369,7 @@ class UserServiceTest {
             User viewer = user(50L, role, acme);
             when(userRepository.findById(50L)).thenReturn(Optional.of(viewer));
 
-            assertThatThrownBy(() -> userService.listUsers(50L, null, null))
+            assertThatThrownBy(() -> userService.listUsers(50L, null, null, null, null, org.springframework.data.domain.PageRequest.of(0, 20)))
                     .isInstanceOf(ForbiddenOperationException.class);
         }
     }

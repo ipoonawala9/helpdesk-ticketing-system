@@ -16,16 +16,20 @@ public class Organization {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     @NotBlank
+    @Column(nullable = false, length = 150)
     private String name;
 
     @NotBlank
     @Email
+    @Column(nullable = false, length = 200)
     private String companyEmail;
 
     @NotBlank
+    @Column(nullable = false, length = 150)
     private String domain;
 
     @NotBlank
+    @Column(nullable = false, length = 100)
     private String industry;
 
 

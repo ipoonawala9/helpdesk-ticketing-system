@@ -10,6 +10,7 @@ import com.ibrahim.helpdesk.ticket.entity.TicketPriority;
 import com.ibrahim.helpdesk.ticket.priority.TicketPriorityBackfill;
 import com.ibrahim.helpdesk.ticket.repository.TicketRepository;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.ResultActions;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,6 +30,9 @@ class TicketPriorityIntegrationTest extends ApiIntegrationTestSupport {
 
     @Autowired
     private TicketPriorityBackfill backfill;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     private long customerId;
     private long adminId;
@@ -124,16 +128,22 @@ class TicketPriorityIntegrationTest extends ApiIntegrationTestSupport {
         long legacyId = idOf(create("NETWORK", "Office outage", "Nobody can reach the internet", ""));
         long keptId = idOf(create("OTHER", "Font question", "How do I change the default font?", ""));
 
-        // Simulate rows written before this feature: one with no priority, one
-        // whose stored priority differs from what the rules would now say.
-        Ticket legacy = ticketRepository.findById(legacyId).orElseThrow();
-        legacy.setPriority(null);
-        ticketRepository.save(legacy);
+        // Simulate a database from before automatic priority, where the column is
+        // nullable and old rows have none. New schemas declare it NOT NULL, but
+        // ddl-auto=update never tightens an existing column, so both exist.
+        // The second row has a stored priority the rules would now disagree with.
+        jdbcTemplate.execute("ALTER TABLE tickets ALTER COLUMN priority DROP NOT NULL");
+        jdbcTemplate.update("UPDATE tickets SET priority = NULL WHERE id = ?", legacyId);
         Ticket kept = ticketRepository.findById(keptId).orElseThrow();
         kept.setPriority(TicketPriority.HIGH);
         ticketRepository.save(kept);
 
-        backfill.onApplicationReady();
+        try {
+            backfill.onApplicationReady();
+        } finally {
+            // The backfill leaves no nulls, so the constraint can be restored for other tests.
+            jdbcTemplate.execute("ALTER TABLE tickets ALTER COLUMN priority SET NOT NULL");
+        }
 
         assertThat(JsonPath.<String>read(fetchTicket(legacyId), "$.priority")).isEqualTo("CRITICAL");
         assertThat(JsonPath.<String>read(fetchTicket(keptId), "$.priority")).isEqualTo("HIGH");

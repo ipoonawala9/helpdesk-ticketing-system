@@ -4,11 +4,13 @@ import com.ibrahim.helpdesk.exception.BusinessRuleException;
 import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.InvalidTicketStateException;
 import com.ibrahim.helpdesk.exception.TicketNotFoundException;
+import com.ibrahim.helpdesk.common.paging.PageResponse;
 import com.ibrahim.helpdesk.organization.dto.OrganizationSummaryResponse;
 import com.ibrahim.helpdesk.security.config.SecurityConfig;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
+import com.ibrahim.helpdesk.ticket.dto.TicketSearchCriteria;
 import com.ibrahim.helpdesk.ticket.dto.UpdateTicketRequest;
 import com.ibrahim.helpdesk.ticket.entity.TicketCategory;
 import com.ibrahim.helpdesk.ticket.entity.TicketStatus;
@@ -24,6 +26,8 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
@@ -205,13 +209,64 @@ class TicketControllerTest {
     @ParameterizedTest(name = "GET /api/tickets as {0} passes the caller's id to the scoped list")
     @org.junit.jupiter.params.provider.EnumSource(UserRole.class)
     void listForEveryRole(UserRole role) throws Exception {
-        when(ticketService.listTickets(77L)).thenReturn(List.of(ticket(TicketStatus.OPEN)));
+        when(ticketService.listTickets(eq(77L), any(), any()))
+                .thenReturn(new PageResponse<>(List.of(ticket(TicketStatus.OPEN)), 0, 20, 1, 1, true, true));
 
         mockMvc.perform(get("/api/tickets").with(as(77L, role)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].id").value(42));
+                .andExpect(jsonPath("$.content[0].id").value(42))
+                .andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.page").value(0));
 
-        verify(ticketService).listTickets(77L);
+        // Defaults: first page of 20, newest first, no filters.
+        verify(ticketService).listTickets(77L, TicketSearchCriteria.none(),
+                PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt").and(Sort.by(Sort.Direction.DESC, "id"))));
+    }
+
+    @Test
+    @DisplayName("GET /api/tickets binds repeated filters, search and paging")
+    void listBindsFiltersAndPaging() throws Exception {
+        when(ticketService.listTickets(eq(ADMIN), any(), any()))
+                .thenReturn(new PageResponse<>(List.of(), 2, 5, 0, 0, false, true));
+
+        mockMvc.perform(get("/api/tickets")
+                        .with(as(ADMIN, UserRole.ORG_ADMIN))
+                        .param("status", "OPEN", "ASSIGNED")
+                        .param("priority", "HIGH")
+                        .param("category", "HARDWARE,NETWORK")
+                        .param("unassigned", "true")
+                        .param("q", "printer")
+                        .param("page", "2")
+                        .param("size", "5")
+                        .param("sort", "priority,desc"))
+                .andExpect(status().isOk());
+
+        verify(ticketService).listTickets(ADMIN,
+                new TicketSearchCriteria(
+                        java.util.Set.of(TicketStatus.OPEN, TicketStatus.ASSIGNED),
+                        java.util.Set.of(com.ibrahim.helpdesk.ticket.entity.TicketPriority.HIGH),
+                        java.util.Set.of(TicketCategory.HARDWARE, TicketCategory.NETWORK),
+                        null, null, true, null, "printer"),
+                PageRequest.of(2, 5, Sort.by(Sort.Direction.DESC, "priorityRank").and(Sort.by(Sort.Direction.DESC, "id"))));
+    }
+
+    @ParameterizedTest(name = "GET /api/tickets?{0} is a 400: {1}")
+    @CsvSource(delimiter = '|', value = {
+            "page=-1                | page must be 0 or greater",
+            "size=0                 | size must be between 1 and 100",
+            "size=101               | size must be between 1 and 100",
+            "sort=password          | sort must be one of",
+            "sort=createdAt,sideways| sort direction must be asc or desc",
+            "status=BANANA          | Invalid value for parameter 'status'",
+            "page=abc               | Invalid value for parameter 'page'"
+    })
+    void listRejectsBadParameters(String query, String message) throws Exception {
+        String[] pair = query.split("=", 2);
+        mockMvc.perform(get("/api/tickets").param(pair[0], pair[1]).with(as(CUSTOMER, UserRole.CUSTOMER)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.startsWith(message)));
+
+        verifyNoInteractions(ticketService);
     }
 
     @Test

@@ -2,15 +2,19 @@ package com.ibrahim.helpdesk.user.repository;
 
 import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.entity.UserRole;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 
 import java.util.List;
 import java.util.Optional;
 
 public interface UserRepository
-extends JpaRepository<User, Long>{
+extends JpaRepository<User, Long>, JpaSpecificationExecutor<User> {
 
     Optional<User> findByEmailIgnoreCase(String email);
 
@@ -20,19 +24,10 @@ extends JpaRepository<User, Long>{
 
     Optional<User> findByIdAndOrganizationId(Long id, Long organizationId);
 
-    // User lists fetch the organization in the same query instead of one query per organization.
-
+    /** A page of users, with each user's organization fetched in the same query. */
+    @Override
     @EntityGraph(attributePaths = "organization")
-    List<User> findAllByOrderByNameAscIdAsc();
-
-    @EntityGraph(attributePaths = "organization")
-    List<User> findByRoleOrderByNameAscIdAsc(UserRole role);
-
-    @EntityGraph(attributePaths = "organization")
-    List<User> findByOrganizationIdOrderByNameAscIdAsc(Long organizationId);
-
-    @EntityGraph(attributePaths = "organization")
-    List<User> findByOrganizationIdAndRoleOrderByNameAscIdAsc(Long organizationId, UserRole role);
+    Page<User> findAll(Specification<User> specification, Pageable pageable);
 
     /**
      * Users whose stored password has no {@code {algorithm}} prefix, i.e. was

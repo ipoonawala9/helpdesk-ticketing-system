@@ -1,9 +1,14 @@
 package com.ibrahim.helpdesk.ticket.service;
 
+import com.ibrahim.helpdesk.exception.BusinessRuleException;
 import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
+import com.ibrahim.helpdesk.exception.OrganizationNotFoundException;
 import com.ibrahim.helpdesk.exception.TicketNotFoundException;
 import com.ibrahim.helpdesk.organization.entity.Organization;
+import com.ibrahim.helpdesk.common.paging.PageRequests;
+import com.ibrahim.helpdesk.common.paging.PageResponse;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
+import com.ibrahim.helpdesk.ticket.dto.TicketSearchCriteria;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.dto.UpdateTicketRequest;
 import com.ibrahim.helpdesk.ticket.entity.Ticket;
@@ -12,6 +17,8 @@ import com.ibrahim.helpdesk.ticket.mapper.TicketMapper;
 import com.ibrahim.helpdesk.ticket.priority.PriorityInput;
 import com.ibrahim.helpdesk.ticket.priority.TicketPriorityPolicy;
 import com.ibrahim.helpdesk.ticket.repository.TicketRepository;
+import com.ibrahim.helpdesk.ticket.repository.TicketSpecifications;
+import org.springframework.data.domain.Pageable;
 import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.entity.UserRole;
 import com.ibrahim.helpdesk.user.service.UserService;
@@ -73,25 +80,46 @@ public class TicketService {
         return TicketMapper.toResponse(ticketRepository.save(savedTicket));
     }
 
+    /** API sort names and the ticket property each one sorts on. */
+    public static final java.util.Map<String, String> SORTABLE_FIELDS = java.util.Map.of(
+            "createdAt", "createdAt",
+            "updatedAt", "updatedAt",
+            "priority", "priorityRank",
+            "status", "statusRank",
+            "ticketNumber", "ticketNumber",
+            "title", "title");
+
     /**
-     * The tickets the viewer is allowed to see, newest first: a customer's own
-     * tickets, an agent's assigned tickets, an administrator's organization's
-     * tickets, or every ticket for a SUPER_ADMIN.
+     * A page of the tickets the viewer is allowed to see, narrowed by the
+     * given filters: a customer's own tickets, an agent's assigned tickets, an
+     * administrator's organization's tickets, or every ticket for a
+     * SUPER_ADMIN. Filters can only narrow that scope.
+     *
+     * <p>Naming an organization other than the viewer's own is answered as if
+     * it did not exist, consistent with every other organization lookup.
      */
     @Transactional(readOnly = true)
-    public List<TicketResponse> listTickets(Long viewerId) {
+    public PageResponse<TicketResponse> listTickets(Long viewerId, TicketSearchCriteria criteria, Pageable pageable) {
         User viewer = userService.findOrThrow(viewerId);
 
-        List<Ticket> tickets = switch (viewer.getRole()) {
-            case SUPER_ADMIN -> ticketRepository.findAllByOrderByCreatedAtDescIdDesc();
-            case ORG_ADMIN -> viewer.getOrganization() == null
-                    ? List.of()
-                    : ticketRepository.findByOrganizationIdOrderByCreatedAtDescIdDesc(viewer.getOrganization().getId());
-            case SUPPORT_AGENT -> ticketRepository.findByAssignedAgentIdOrderByCreatedAtDescIdDesc(viewer.getId());
-            case CUSTOMER -> ticketRepository.findByCustomerIdOrderByCreatedAtDescIdDesc(viewer.getId());
-        };
+        if (Boolean.TRUE.equals(criteria.unassigned()) && criteria.assignedAgentId() != null) {
+            throw new BusinessRuleException("assignedAgentId cannot be combined with unassigned=true");
+        }
+        if (criteria.organizationId() != null && viewer.getRole() != UserRole.SUPER_ADMIN
+                && (viewer.getOrganization() == null
+                    || !criteria.organizationId().equals(viewer.getOrganization().getId()))) {
+            throw new OrganizationNotFoundException(criteria.organizationId());
+        }
+        TicketSearchCriteria validated = new TicketSearchCriteria(
+                criteria.statuses(), criteria.priorities(), criteria.categories(),
+                criteria.customerId(), criteria.assignedAgentId(), criteria.unassigned(),
+                criteria.organizationId(), PageRequests.searchTerm(criteria.query()));
 
-        return tickets.stream().map(TicketMapper::toResponse).toList();
+        var tickets = ticketRepository.findAll(
+                TicketSpecifications.visibleTo(viewer).and(TicketSpecifications.matching(validated)),
+                pageable);
+
+        return PageResponse.of(tickets, TicketMapper::toResponse);
     }
 
     @Transactional(readOnly = true)

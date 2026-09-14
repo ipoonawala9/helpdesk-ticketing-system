@@ -60,11 +60,13 @@ class TicketApiIntegrationTest extends ApiIntegrationTestSupport {
 
         long ticketId = JsonPath.parse(ticketBody).read("$.id", Integer.class).longValue();
 
-        // Other integration tests share this database, so find this ticket by id
-        // rather than assuming it is first in the list.
-        mockMvc.perform(get("/api/tickets").with(asSuperAdmin()))
+        // Other integration tests share this database, so search by this ticket's
+        // unique number rather than assuming where it falls in the full list.
+        String ticketNumber = JsonPath.read(ticketBody, "$.ticketNumber");
+        mockMvc.perform(get("/api/tickets").param("q", ticketNumber).with(asSuperAdmin()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[?(@.id == " + ticketId + ")].customer.name").value(contains("Dana Customer")));
+                .andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.content[?(@.id == " + ticketId + ")].customer.name").value(contains("Dana Customer")));
     }
 
     @Test
