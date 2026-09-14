@@ -1,9 +1,11 @@
 package com.ibrahim.helpdesk.ticket.controller;
 
+import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.dto.UpdateTicketRequest;
 import com.ibrahim.helpdesk.ticket.service.TicketService;
+import com.ibrahim.helpdesk.ticket.service.TicketWorkflowService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -17,6 +19,7 @@ import java.util.List;
 public class TicketController {
 
     private final TicketService ticketService;
+    private final TicketWorkflowService ticketWorkflowService;
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -40,6 +43,14 @@ public class TicketController {
             @Valid @RequestBody UpdateTicketRequest request) {
 
         return ticketService.updateTicket(id, request);
+    }
+
+    @PostMapping("/{id}/assign")
+    public TicketResponse assignTicket(
+            @PathVariable Long id,
+            @Valid @RequestBody AssignTicketRequest request) {
+
+        return ticketWorkflowService.assignTicket(id, request);
     }
 
     @DeleteMapping("/{id}")

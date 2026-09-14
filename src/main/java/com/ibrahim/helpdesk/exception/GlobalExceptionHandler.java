@@ -45,6 +45,24 @@ public class GlobalExceptionHandler {
                 .body(ApiErrorResponse.of(400, "Bad Request", ex.getMessage(), request.getRequestURI()));
     }
 
+    @ExceptionHandler(ForbiddenOperationException.class)
+    public ResponseEntity<ApiErrorResponse> handleForbiddenOperation(
+            ForbiddenOperationException ex, HttpServletRequest request) {
+
+        return ResponseEntity
+                .status(HttpStatus.FORBIDDEN)
+                .body(ApiErrorResponse.of(403, "Forbidden", ex.getMessage(), request.getRequestURI()));
+    }
+
+    @ExceptionHandler(InvalidTicketStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidTicketState(
+            InvalidTicketStateException ex, HttpServletRequest request) {
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(ApiErrorResponse.of(409, "Conflict", ex.getMessage(), request.getRequestURI()));
+    }
+
     /**
      * Bean Validation failures on an @Valid request body. Every rejected field
      * is reported at once rather than one per round trip.

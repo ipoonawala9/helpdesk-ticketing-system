@@ -58,6 +58,10 @@ Controllers never accept or return JPA entities. Every request is bound to a
 validated request record and every response is built by an explicit mapper, so
 passwords, Hibernate proxy fields and circular references cannot reach a client.
 
+Ticket status never changes through a generic update. Each transition is a
+named business action in `TicketWorkflowService` with its own rules; the first
+of these is assignment (`OPEN` → `ASSIGNED`).
+
 ---
 
 ## Tech Stack
@@ -88,7 +92,9 @@ helpdesk-ticketing-system/
 │   │   │   ├── exception/
 │   │   │   │   ├── ApiErrorResponse.java         # single error shape
 │   │   │   │   ├── BusinessRuleException.java
+│   │   │   │   ├── ForbiddenOperationException.java
 │   │   │   │   ├── GlobalExceptionHandler.java   # @RestControllerAdvice
+│   │   │   │   ├── InvalidTicketStateException.java
 │   │   │   │   ├── OrganizationNotFoundException.java
 │   │   │   │   ├── TicketNotFoundException.java
 │   │   │   │   └── UserNotFoundException.java
@@ -113,6 +119,7 @@ helpdesk-ticketing-system/
 │   │   │   │   └── service/UserService.java
 │   │   │   └── ticket/
 │   │   │       ├── controller/TicketController.java
+│   │   │       ├── dto/AssignTicketRequest.java
 │   │   │       ├── dto/CreateTicketRequest.java
 │   │   │       ├── dto/TicketResponse.java
 │   │   │       ├── dto/UpdateTicketRequest.java
@@ -122,15 +129,18 @@ helpdesk-ticketing-system/
 │   │   │       ├── entity/TicketStatus.java
 │   │   │       ├── mapper/TicketMapper.java
 │   │   │       ├── repository/TicketRepository.java
-│   │   │       └── service/TicketService.java
+│   │   │       ├── service/TicketService.java          # CRUD
+│   │   │       └── service/TicketWorkflowService.java  # status transitions
 │   │   └── resources/
 │   │       └── application.properties
 │   └── test/
 │       ├── java/com/ibrahim/helpdesk/
 │       │   ├── HelpDeskApplicationTests.java
 │       │   ├── TicketApiIntegrationTest.java      # end-to-end, H2
+│       │   ├── TicketAssignmentIntegrationTest.java
 │       │   ├── ticket/controller/TicketControllerTest.java
 │       │   ├── ticket/service/TicketServiceTest.java
+│       │   ├── ticket/service/TicketWorkflowServiceTest.java
 │       │   └── user/service/UserServiceTest.java
 │       └── resources/
 │           └── application.properties             # in-memory H2
@@ -529,6 +539,71 @@ Response `404 Not Found`: standard error body.
 
 ---
 
+#### Assign Ticket
+
+```
+POST /api/tickets/{id}/assign
+Content-Type: application/json
+```
+
+Request body:
+```json
+{
+  "agentId": 3,
+  "adminId": 2
+}
+```
+
+An organization administrator assigns the ticket to a support agent. On
+success the ticket's `assignedAgent` is set, `status` becomes `ASSIGNED` and
+`updatedAt` is refreshed.
+
+> **Interim identity:** `adminId` identifies the acting administrator only
+> because authentication does not exist yet. Every rule below is enforced
+> against that user, but the caller's claim to *be* that user is not verified.
+> Once authentication is added the acting user will come from the security
+> context and `adminId` will be removed from the request.
+
+Rules, checked in this order:
+
+| # | Rule | Failure |
+|---|---|---|
+| 1 | Ticket exists | `404 Not Found` |
+| 2 | Admin exists | `404 Not Found` |
+| 3 | Admin has role `ORG_ADMIN`, is active, and belongs to the ticket's organization | `403 Forbidden` |
+| 4 | Ticket status is `OPEN` or `ASSIGNED` | `409 Conflict` |
+| 5 | Agent exists | `404 Not Found` |
+| 6 | Agent has role `SUPPORT_AGENT`, is active, and belongs to the ticket's organization | `400 Bad Request` |
+
+The admin is authorised before the agent is looked up, so a caller without
+permission learns nothing about other users.
+
+**Reassignment:** an `ASSIGNED` ticket can be reassigned to a different agent
+before work starts. Assigning the agent who already holds the ticket is an
+idempotent no-op and does not change `updatedAt`. Tickets that are
+`IN_PROGRESS`, `RESOLVED`, `REOPENED` or `CLOSED` cannot be assigned through
+this endpoint; reassignment for those states is defined with the reopen/close
+workflow.
+
+Response `200 OK`: the updated ticket.
+
+```json
+{
+  "id": 1,
+  "ticketNumber": "HD-2026-000001",
+  "status": "ASSIGNED",
+  "assignedAgent": {
+    "id": 3,
+    "name": "Sam Agent",
+    "email": "sam@acme.com",
+    "role": "SUPPORT_AGENT"
+  },
+  "...": "remaining ticket fields unchanged"
+}
+```
+
+---
+
 #### Delete Ticket
 
 ```
@@ -579,6 +654,13 @@ adding a field to an entity can never silently widen an API response.
 | `category` | TicketCategory | required |
 | `customerId` | Long | required |
 
+#### AssignTicketRequest
+
+| Field | Type | Constraints |
+|---|---|---|
+| `agentId` | Long | required |
+| `adminId` | Long | required; interim until authentication |
+
 #### UpdateTicketRequest
 
 | Field | Type | Constraints |
@@ -624,6 +706,8 @@ shape, so a client only ever has to parse one structure:
 | `UserNotFoundException` | `404 Not Found` | `User with ID X not found` |
 | `TicketNotFoundException` | `404 Not Found` | `Ticket with ID X not found` |
 | `BusinessRuleException` | `400 Bad Request` | the rule that was violated |
+| `ForbiddenOperationException` | `403 Forbidden` | why the acting user may not do this |
+| `InvalidTicketStateException` | `409 Conflict` | `Cannot assign a ticket with status X` |
 | `MethodArgumentNotValidException` | `400 Bad Request` | `Validation failed`, plus `fieldErrors` |
 | `HttpMessageNotReadableException` | `400 Bad Request` | `Malformed or unreadable request body` |
 | `MethodArgumentTypeMismatchException` | `400 Bad Request` | `Invalid value for parameter 'x'` |
@@ -667,8 +751,10 @@ needs neither a live database nor any environment variables:
 |---|---|---|
 | `TicketServiceTest` | unit (Mockito) | organization derived from the customer, server-controlled fields on create, ticket number generation, update touching only title/description/category |
 | `UserServiceTest` | unit (Mockito) | organization resolution, `SUPER_ADMIN` without an organization, rejection of an organization-scoped role with no organization, no password on the response record |
-| `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals |
+| `TicketWorkflowServiceTest` | unit (Mockito) | every assignment rule: valid assignment and reassignment, idempotent same-agent assign, each non-admin role, inactive and cross-organization admin, each non-agent role, inactive and cross-organization agent, each non-assignable status, and that nothing is saved on any rejection |
+| `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assignment mapped to `200`/`400`/`403`/`409` |
 | `TicketApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full organization to user to ticket flow through the real web, service and persistence layers, asserting no `password` or `hibernateLazyInitializer` anywhere in the payload |
+| `TicketAssignmentIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | assignment persisted and readable back, reassignment, and that cross-organization agents, cross-organization admins, non-admin actors, non-agent targets and unknown ids are rejected with the stored ticket left `OPEN` and unassigned |
 
 ---
 

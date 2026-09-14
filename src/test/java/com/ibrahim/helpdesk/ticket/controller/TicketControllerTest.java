@@ -1,12 +1,17 @@
 package com.ibrahim.helpdesk.ticket.controller;
 
+import com.ibrahim.helpdesk.exception.BusinessRuleException;
+import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
+import com.ibrahim.helpdesk.exception.InvalidTicketStateException;
 import com.ibrahim.helpdesk.exception.TicketNotFoundException;
 import com.ibrahim.helpdesk.organization.dto.OrganizationSummaryResponse;
+import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.entity.TicketCategory;
 import com.ibrahim.helpdesk.ticket.entity.TicketStatus;
 import com.ibrahim.helpdesk.ticket.service.TicketService;
+import com.ibrahim.helpdesk.ticket.service.TicketWorkflowService;
 import com.ibrahim.helpdesk.user.dto.UserSummaryResponse;
 import com.ibrahim.helpdesk.user.entity.UserRole;
 import org.junit.jupiter.api.DisplayName;
@@ -20,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.time.LocalDateTime;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -38,6 +44,9 @@ class TicketControllerTest {
 
     @MockitoBean
     private TicketService ticketService;
+
+    @MockitoBean
+    private TicketWorkflowService ticketWorkflowService;
 
     private TicketResponse sampleResponse() {
         return new TicketResponse(
@@ -124,5 +133,90 @@ class TicketControllerTest {
                 .andExpect(status().isNoContent());
 
         verify(ticketService).deleteTicket(eq(42L));
+    }
+
+    private static final String ASSIGN_BODY = """
+            {"agentId":20,"adminId":10}
+            """;
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/assign returns 200 with the assigned ticket")
+    void assignTicketReturnsOk() throws Exception {
+        TicketResponse assigned = new TicketResponse(
+                42L, "HD-2026-000042", "Printer will not print", "It jams on every job",
+                TicketStatus.ASSIGNED, null, TicketCategory.HARDWARE,
+                new UserSummaryResponse(1L, "Dana Customer", "dana@acme.test", UserRole.CUSTOMER),
+                new UserSummaryResponse(20L, "Sam Agent", "sam@acme.test", UserRole.SUPPORT_AGENT),
+                new OrganizationSummaryResponse(7L, "Acme Ltd"),
+                0, LocalDateTime.now(), LocalDateTime.now(), null, null);
+        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class))).thenReturn(assigned);
+
+        mockMvc.perform(post("/api/tickets/42/assign")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ASSIGN_BODY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ASSIGNED"))
+                .andExpect(jsonPath("$.assignedAgent.id").value(20))
+                .andExpect(jsonPath("$.assignedAgent.role").value("SUPPORT_AGENT"))
+                .andExpect(jsonPath("$.assignedAgent.password").doesNotExist());
+
+        verify(ticketWorkflowService).assignTicket(42L, new AssignTicketRequest(20L, 10L));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/assign validates that agentId and adminId are present")
+    void assignTicketValidatesBody() throws Exception {
+        mockMvc.perform(post("/api/tickets/42/assign")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.agentId").value("Agent id is required"))
+                .andExpect(jsonPath("$.fieldErrors.adminId").value("Admin id is required"));
+
+        verify(ticketWorkflowService, never()).assignTicket(anyLong(), any(AssignTicketRequest.class));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/assign maps a forbidden actor to 403")
+    void assignTicketMapsForbiddenTo403() throws Exception {
+        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class)))
+                .thenThrow(new ForbiddenOperationException("Only organization administrators can assign tickets"));
+
+        mockMvc.perform(post("/api/tickets/42/assign")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ASSIGN_BODY))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.error").value("Forbidden"))
+                .andExpect(jsonPath("$.message").value("Only organization administrators can assign tickets"))
+                .andExpect(jsonPath("$.path").value("/api/tickets/42/assign"));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/assign maps a non-assignable status to 409")
+    void assignTicketMapsInvalidStateTo409() throws Exception {
+        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class)))
+                .thenThrow(new InvalidTicketStateException("assign", TicketStatus.CLOSED));
+
+        mockMvc.perform(post("/api/tickets/42/assign")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ASSIGN_BODY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.error").value("Conflict"))
+                .andExpect(jsonPath("$.message").value("Cannot assign a ticket with status CLOSED"));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/assign maps an invalid agent to 400")
+    void assignTicketMapsInvalidAgentTo400() throws Exception {
+        when(ticketWorkflowService.assignTicket(eq(42L), any(AssignTicketRequest.class)))
+                .thenThrow(new BusinessRuleException("Agent must belong to the ticket's organization"));
+
+        mockMvc.perform(post("/api/tickets/42/assign")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ASSIGN_BODY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Agent must belong to the ticket's organization"));
     }
 }

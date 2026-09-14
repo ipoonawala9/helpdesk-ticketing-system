@@ -82,9 +82,14 @@ class TicketApiIntegrationTest {
                 .doesNotContain("hibernateLazyInitializer")
                 .doesNotContain("handler");
 
+        long ticketId = com.jayway.jsonpath.JsonPath.parse(ticketBody).read("$.id", Integer.class).longValue();
+
+        // Other integration tests share this database, so find this ticket by id
+        // rather than assuming it is first in the list.
         mockMvc.perform(get("/api/tickets"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].customer.name").value("Dana Customer"));
+                .andExpect(jsonPath("$[?(@.id == " + ticketId + ")].customer.name")
+                        .value(org.hamcrest.Matchers.contains("Dana Customer")));
     }
 
     @Test
