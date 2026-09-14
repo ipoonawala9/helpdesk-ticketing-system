@@ -1,5 +1,6 @@
 package com.ibrahim.helpdesk.ticket.controller;
 
+import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
@@ -51,6 +52,22 @@ public class TicketController {
             @Valid @RequestBody AssignTicketRequest request) {
 
         return ticketWorkflowService.assignTicket(id, request);
+    }
+
+    @PostMapping("/{id}/start")
+    public TicketResponse startWork(
+            @PathVariable Long id,
+            @Valid @RequestBody AgentActionRequest request) {
+
+        return ticketWorkflowService.startWork(id, request);
+    }
+
+    @PostMapping("/{id}/resolve")
+    public TicketResponse resolveTicket(
+            @PathVariable Long id,
+            @Valid @RequestBody AgentActionRequest request) {
+
+        return ticketWorkflowService.resolveTicket(id, request);
     }
 
     @DeleteMapping("/{id}")

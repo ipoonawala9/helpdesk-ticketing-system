@@ -4,6 +4,7 @@ import com.ibrahim.helpdesk.exception.BusinessRuleException;
 import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.InvalidTicketStateException;
 import com.ibrahim.helpdesk.organization.entity.Organization;
+import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.entity.Ticket;
@@ -53,9 +54,7 @@ public class TicketWorkflowService {
         User admin = userService.findOrThrow(request.adminId());
         requireOrgAdminOf(admin, ticket.getOrganization());
 
-        if (!ASSIGNABLE_STATUSES.contains(ticket.getStatus())) {
-            throw new InvalidTicketStateException("assign", ticket.getStatus());
-        }
+        requireStatus(ticket, ASSIGNABLE_STATUSES, "assign");
 
         User agent = userService.findOrThrow(request.agentId());
         requireAssignableAgent(agent, ticket.getOrganization());
@@ -72,6 +71,65 @@ public class TicketWorkflowService {
         ticket.setUpdatedAt(LocalDateTime.now());
 
         return TicketMapper.toResponse(ticketRepository.save(ticket));
+    }
+
+    /**
+     * The assigned agent begins working on the ticket: ASSIGNED -> IN_PROGRESS.
+     */
+    @Transactional
+    public TicketResponse startWork(Long ticketId, AgentActionRequest request) {
+
+        Ticket ticket = ticketService.findOrThrow(ticketId);
+        requireAssignedAgent(ticket, userService.findOrThrow(request.agentId()), "start work on");
+        requireStatus(ticket, EnumSet.of(TicketStatus.ASSIGNED), "start work on");
+
+        ticket.setStatus(TicketStatus.IN_PROGRESS);
+        ticket.setUpdatedAt(LocalDateTime.now());
+
+        return TicketMapper.toResponse(ticketRepository.save(ticket));
+    }
+
+    /**
+     * The assigned agent marks the issue as fixed: IN_PROGRESS -> RESOLVED.
+     * The ticket is not closed here; closure follows customer confirmation.
+     */
+    @Transactional
+    public TicketResponse resolveTicket(Long ticketId, AgentActionRequest request) {
+
+        Ticket ticket = ticketService.findOrThrow(ticketId);
+        requireAssignedAgent(ticket, userService.findOrThrow(request.agentId()), "resolve");
+        requireStatus(ticket, EnumSet.of(TicketStatus.IN_PROGRESS), "resolve");
+
+        LocalDateTime now = LocalDateTime.now();
+        ticket.setStatus(TicketStatus.RESOLVED);
+        ticket.setResolvedAt(now);
+        ticket.setUpdatedAt(now);
+
+        return TicketMapper.toResponse(ticketRepository.save(ticket));
+    }
+
+    private static void requireStatus(Ticket ticket, Set<TicketStatus> allowed, String action) {
+        if (!allowed.contains(ticket.getStatus())) {
+            throw new InvalidTicketStateException(action, ticket.getStatus());
+        }
+    }
+
+    /**
+     * Only the agent currently holding the ticket may act on it. Role and
+     * active flag are re-checked because either may have changed since the
+     * ticket was assigned.
+     */
+    private static void requireAssignedAgent(Ticket ticket, User actor, String action) {
+        boolean isAssignedAgent = ticket.getAssignedAgent() != null
+                && Objects.equals(ticket.getAssignedAgent().getId(), actor.getId());
+
+        if (!isAssignedAgent || actor.getRole() != UserRole.SUPPORT_AGENT) {
+            throw new ForbiddenOperationException(
+                    "Only the assigned agent can " + action + " this ticket");
+        }
+        if (!Boolean.TRUE.equals(actor.getActive())) {
+            throw new ForbiddenOperationException("Inactive users cannot " + action + " tickets");
+        }
     }
 
     private void requireOrgAdminOf(User admin, Organization organization) {

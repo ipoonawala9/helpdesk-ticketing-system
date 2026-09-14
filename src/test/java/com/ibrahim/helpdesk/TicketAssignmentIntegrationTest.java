@@ -4,18 +4,9 @@ import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.ResultActions;
-
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -24,12 +15,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * layers, including that rejected assignments leave the stored ticket
  * unchanged.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-class TicketAssignmentIntegrationTest {
-
-    @Autowired
-    private MockMvc mockMvc;
+class TicketAssignmentIntegrationTest extends ApiIntegrationTestSupport {
 
     private long acmeId;
     private long globexId;
@@ -136,56 +122,11 @@ class TicketAssignmentIntegrationTest {
         assertTicketStillOpenAndUnassigned();
     }
 
-    private ResultActions assign(long ticket, long agentId, long adminId) throws Exception {
-        return mockMvc.perform(post("/api/tickets/{id}/assign", ticket)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("""
-                        {"agentId":%d,"adminId":%d}
-                        """.formatted(agentId, adminId)));
-    }
-
     private void assertTicketStillOpenAndUnassigned() throws Exception {
-        String body = mockMvc.perform(get("/api/tickets/{id}", ticketId))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
+        String body = fetchTicket(ticketId);
 
         assertThat(JsonPath.<String>read(body, "$.status")).isEqualTo("OPEN");
         assertThat(JsonPath.<Object>read(body, "$.assignedAgent")).isNull();
     }
 
-    private long createOrganization(String name) throws Exception {
-        String slug = name.toLowerCase().replace(' ', '-');
-        return idOf(mockMvc.perform(post("/api/organizations")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("""
-                        {"name":"%s","companyEmail":"support@%s.test",
-                         "domain":"%s.test","industry":"Technology"}
-                        """.formatted(name, slug, slug))));
-    }
-
-    private long createUser(String name, String role, long organizationId) throws Exception {
-        // Unique emails keep this class independent of other tests sharing the database.
-        String email = name.toLowerCase().replace(' ', '.') + "." + UUID.randomUUID() + "@example.test";
-        return idOf(mockMvc.perform(post("/api/users")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("""
-                        {"name":"%s","email":"%s","password":"correct-horse",
-                         "role":"%s","organizationId":%d}
-                        """.formatted(name, email, role, organizationId))));
-    }
-
-    private long createTicket(long customerId) throws Exception {
-        return idOf(mockMvc.perform(post("/api/tickets")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("""
-                        {"title":"Printer will not print","description":"It jams on every job",
-                         "category":"HARDWARE","customerId":%d}
-                        """.formatted(customerId))));
-    }
-
-    private long idOf(ResultActions result) throws Exception {
-        String body = result.andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString();
-        return JsonPath.parse(body).read("$.id", Integer.class).longValue();
-    }
 }

@@ -6,6 +6,7 @@ import com.ibrahim.helpdesk.exception.InvalidTicketStateException;
 import com.ibrahim.helpdesk.exception.TicketNotFoundException;
 import com.ibrahim.helpdesk.exception.UserNotFoundException;
 import com.ibrahim.helpdesk.organization.entity.Organization;
+import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
 import com.ibrahim.helpdesk.ticket.entity.Ticket;
@@ -350,6 +351,201 @@ class TicketWorkflowServiceTest {
                     .hasMessage("Cannot assign a ticket with status " + status);
 
             assertThat(ticket.getStatus()).isEqualTo(status);
+            assertNothingSaved();
+        }
+    }
+
+    /** Puts the fixture ticket in the hands of the fixture agent with the given status. */
+    private void givenAssignedTicket(TicketStatus status) {
+        ticket.setStatus(status);
+        ticket.setAssignedAgent(agent);
+        when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+    }
+
+    private AgentActionRequest asAgent(long agentId) {
+        return new AgentActionRequest(agentId);
+    }
+
+    @Nested
+    @DisplayName("Start work (ASSIGNED -> IN_PROGRESS)")
+    class StartWork {
+
+        @Test
+        @DisplayName("the assigned agent moves an ASSIGNED ticket to IN_PROGRESS")
+        void startsAssignedTicket() {
+            givenAssignedTicket(TicketStatus.ASSIGNED);
+            when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+            when(ticketRepository.save(ticket)).thenReturn(ticket);
+            LocalDateTime before = ticket.getUpdatedAt();
+
+            TicketResponse response = workflowService.startWork(TICKET_ID, asAgent(AGENT_ID));
+
+            assertThat(response.status()).isEqualTo(TicketStatus.IN_PROGRESS);
+            assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
+            assertThat(response.updatedAt()).isAfter(before);
+            assertThat(response.resolvedAt()).isNull();
+            assertThat(response.closedAt()).isNull();
+            verify(ticketRepository).save(ticket);
+        }
+
+        @Test
+        @DisplayName("rejects an unknown ticket before loading the agent")
+        void rejectsUnknownTicket() {
+            when(ticketService.findOrThrow(TICKET_ID)).thenThrow(new TicketNotFoundException(TICKET_ID));
+
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+                    .isInstanceOf(TicketNotFoundException.class);
+
+            verify(userService, never()).findOrThrow(any());
+            assertNothingSaved();
+        }
+
+        @Test
+        @DisplayName("rejects an unknown acting user")
+        void rejectsUnknownAgent() {
+            givenAssignedTicket(TicketStatus.ASSIGNED);
+            when(userService.findOrThrow(AGENT_ID)).thenThrow(new UserNotFoundException(AGENT_ID));
+
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+                    .isInstanceOf(UserNotFoundException.class);
+
+            assertNothingSaved();
+        }
+
+        @Test
+        @DisplayName("another agent in the same organization cannot start the ticket")
+        void rejectsOtherAgent() {
+            User otherAgent = user(21L, "Pat Agent", UserRole.SUPPORT_AGENT, acme);
+            givenAssignedTicket(TicketStatus.ASSIGNED);
+            when(userService.findOrThrow(21L)).thenReturn(otherAgent);
+
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(21L)))
+                    .isInstanceOf(ForbiddenOperationException.class)
+                    .hasMessage("Only the assigned agent can start work on this ticket");
+
+            assertThat(ticket.getStatus()).isEqualTo(TicketStatus.ASSIGNED);
+            assertNothingSaved();
+        }
+
+        @Test
+        @DisplayName("nobody can start an unassigned ticket; it is refused as 403, not 409")
+        void rejectsUnassignedTicket() {
+            when(ticketService.findOrThrow(TICKET_ID)).thenReturn(ticket);
+            when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+                    .isInstanceOf(ForbiddenOperationException.class)
+                    .hasMessage("Only the assigned agent can start work on this ticket");
+
+            assertNothingSaved();
+        }
+
+        @Test
+        @DisplayName("an assigned agent who has since been deactivated cannot start")
+        void rejectsInactiveAssignedAgent() {
+            agent.setActive(false);
+            givenAssignedTicket(TicketStatus.ASSIGNED);
+            when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+                    .isInstanceOf(ForbiddenOperationException.class)
+                    .hasMessage("Inactive users cannot start work on tickets");
+
+            assertNothingSaved();
+        }
+
+        @Test
+        @DisplayName("an assigned user who is no longer a SUPPORT_AGENT cannot start")
+        void rejectsAssignedUserWhoseRoleChanged() {
+            agent.setRole(UserRole.ORG_ADMIN);
+            givenAssignedTicket(TicketStatus.ASSIGNED);
+            when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+                    .isInstanceOf(ForbiddenOperationException.class);
+
+            assertNothingSaved();
+        }
+
+        @ParameterizedTest(name = "cannot start work on a {0} ticket")
+        @EnumSource(value = TicketStatus.class, names = {"IN_PROGRESS", "RESOLVED", "REOPENED", "CLOSED"})
+        void rejectsNonStartableStatuses(TicketStatus status) {
+            givenAssignedTicket(status);
+            when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+
+            assertThatThrownBy(() -> workflowService.startWork(TICKET_ID, asAgent(AGENT_ID)))
+                    .isInstanceOf(InvalidTicketStateException.class)
+                    .hasMessage("Cannot start work on a ticket with status " + status);
+
+            assertThat(ticket.getStatus()).isEqualTo(status);
+            assertNothingSaved();
+        }
+    }
+
+    @Nested
+    @DisplayName("Resolve (IN_PROGRESS -> RESOLVED)")
+    class Resolve {
+
+        @Test
+        @DisplayName("the assigned agent resolves an IN_PROGRESS ticket and resolvedAt is set")
+        void resolvesInProgressTicket() {
+            givenAssignedTicket(TicketStatus.IN_PROGRESS);
+            when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+            when(ticketRepository.save(ticket)).thenReturn(ticket);
+            LocalDateTime before = LocalDateTime.now();
+
+            TicketResponse response = workflowService.resolveTicket(TICKET_ID, asAgent(AGENT_ID));
+
+            assertThat(response.status()).isEqualTo(TicketStatus.RESOLVED);
+            assertThat(response.resolvedAt()).isNotNull().isAfterOrEqualTo(before);
+            assertThat(response.updatedAt()).isEqualTo(response.resolvedAt());
+            assertThat(response.closedAt()).isNull();
+            assertThat(response.assignedAgent().id()).isEqualTo(AGENT_ID);
+            assertThat(response.reopenCount()).isZero();
+        }
+
+        @ParameterizedTest(name = "a {0} who is not the assigned agent cannot resolve")
+        @EnumSource(value = UserRole.class, names = {"CUSTOMER", "ORG_ADMIN", "SUPPORT_AGENT", "SUPER_ADMIN"})
+        void rejectsAnyoneButTheAssignedAgent(UserRole role) {
+            User actor = user(30L, "Someone Else", role, acme);
+            givenAssignedTicket(TicketStatus.IN_PROGRESS);
+            when(userService.findOrThrow(30L)).thenReturn(actor);
+
+            assertThatThrownBy(() -> workflowService.resolveTicket(TICKET_ID, asAgent(30L)))
+                    .isInstanceOf(ForbiddenOperationException.class)
+                    .hasMessage("Only the assigned agent can resolve this ticket");
+
+            assertThat(ticket.getResolvedAt()).isNull();
+            assertNothingSaved();
+        }
+
+        @Test
+        @DisplayName("an assigned agent who has since been deactivated cannot resolve")
+        void rejectsInactiveAssignedAgent() {
+            agent.setActive(false);
+            givenAssignedTicket(TicketStatus.IN_PROGRESS);
+            when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+
+            assertThatThrownBy(() -> workflowService.resolveTicket(TICKET_ID, asAgent(AGENT_ID)))
+                    .isInstanceOf(ForbiddenOperationException.class)
+                    .hasMessage("Inactive users cannot resolve tickets");
+
+            assertNothingSaved();
+        }
+
+        @ParameterizedTest(name = "cannot resolve a {0} ticket")
+        @EnumSource(value = TicketStatus.class, names = {"ASSIGNED", "RESOLVED", "REOPENED", "CLOSED"})
+        void rejectsNonResolvableStatuses(TicketStatus status) {
+            givenAssignedTicket(status);
+            LocalDateTime originalResolvedAt = ticket.getResolvedAt();
+            when(userService.findOrThrow(AGENT_ID)).thenReturn(agent);
+
+            assertThatThrownBy(() -> workflowService.resolveTicket(TICKET_ID, asAgent(AGENT_ID)))
+                    .isInstanceOf(InvalidTicketStateException.class)
+                    .hasMessage("Cannot resolve a ticket with status " + status);
+
+            assertThat(ticket.getStatus()).isEqualTo(status);
+            assertThat(ticket.getResolvedAt()).isEqualTo(originalResolvedAt);
             assertNothingSaved();
         }
     }

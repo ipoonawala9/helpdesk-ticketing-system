@@ -5,6 +5,7 @@ import com.ibrahim.helpdesk.exception.ForbiddenOperationException;
 import com.ibrahim.helpdesk.exception.InvalidTicketStateException;
 import com.ibrahim.helpdesk.exception.TicketNotFoundException;
 import com.ibrahim.helpdesk.organization.dto.OrganizationSummaryResponse;
+import com.ibrahim.helpdesk.ticket.dto.AgentActionRequest;
 import com.ibrahim.helpdesk.ticket.dto.AssignTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.CreateTicketRequest;
 import com.ibrahim.helpdesk.ticket.dto.TicketResponse;
@@ -16,6 +17,8 @@ import com.ibrahim.helpdesk.user.dto.UserSummaryResponse;
 import com.ibrahim.helpdesk.user.entity.UserRole;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.http.MediaType;
@@ -218,5 +221,92 @@ class TicketControllerTest {
                         .content(ASSIGN_BODY))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Agent must belong to the ticket's organization"));
+    }
+
+    private static TicketResponse ticketWithStatus(TicketStatus status, LocalDateTime resolvedAt) {
+        return new TicketResponse(
+                42L, "HD-2026-000042", "Printer will not print", "It jams on every job",
+                status, null, TicketCategory.HARDWARE,
+                new UserSummaryResponse(1L, "Dana Customer", "dana@acme.test", UserRole.CUSTOMER),
+                new UserSummaryResponse(20L, "Sam Agent", "sam@acme.test", UserRole.SUPPORT_AGENT),
+                new OrganizationSummaryResponse(7L, "Acme Ltd"),
+                0, LocalDateTime.now(), LocalDateTime.now(), resolvedAt, null);
+    }
+
+    private static final String AGENT_BODY = """
+            {"agentId":20}
+            """;
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/start returns 200 with the IN_PROGRESS ticket")
+    void startWorkReturnsOk() throws Exception {
+        when(ticketWorkflowService.startWork(eq(42L), any(AgentActionRequest.class)))
+                .thenReturn(ticketWithStatus(TicketStatus.IN_PROGRESS, null));
+
+        mockMvc.perform(post("/api/tickets/42/start")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(AGENT_BODY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.resolvedAt").doesNotExist());
+
+        verify(ticketWorkflowService).startWork(42L, new AgentActionRequest(20L));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/resolve returns 200 with the RESOLVED ticket and resolvedAt")
+    void resolveReturnsOk() throws Exception {
+        when(ticketWorkflowService.resolveTicket(eq(42L), any(AgentActionRequest.class)))
+                .thenReturn(ticketWithStatus(TicketStatus.RESOLVED, LocalDateTime.now()));
+
+        mockMvc.perform(post("/api/tickets/42/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(AGENT_BODY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RESOLVED"))
+                .andExpect(jsonPath("$.resolvedAt").exists())
+                .andExpect(jsonPath("$.closedAt").doesNotExist());
+
+        verify(ticketWorkflowService).resolveTicket(42L, new AgentActionRequest(20L));
+    }
+
+    @ParameterizedTest(name = "POST /api/tickets/42/{0} requires agentId")
+    @ValueSource(strings = {"start", "resolve"})
+    void agentActionsValidateBody(String action) throws Exception {
+        mockMvc.perform(post("/api/tickets/42/" + action)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.agentId").value("Agent id is required"));
+
+        verify(ticketWorkflowService, never()).startWork(anyLong(), any(AgentActionRequest.class));
+        verify(ticketWorkflowService, never()).resolveTicket(anyLong(), any(AgentActionRequest.class));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/start maps a non-assigned caller to 403")
+    void startWorkMapsForbiddenTo403() throws Exception {
+        when(ticketWorkflowService.startWork(eq(42L), any(AgentActionRequest.class)))
+                .thenThrow(new ForbiddenOperationException("Only the assigned agent can start work on this ticket"));
+
+        mockMvc.perform(post("/api/tickets/42/start")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(AGENT_BODY))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("Only the assigned agent can start work on this ticket"))
+                .andExpect(jsonPath("$.path").value("/api/tickets/42/start"));
+    }
+
+    @Test
+    @DisplayName("POST /api/tickets/{id}/resolve maps an invalid transition to 409")
+    void resolveMapsInvalidStateTo409() throws Exception {
+        when(ticketWorkflowService.resolveTicket(eq(42L), any(AgentActionRequest.class)))
+                .thenThrow(new InvalidTicketStateException("resolve", TicketStatus.ASSIGNED));
+
+        mockMvc.perform(post("/api/tickets/42/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(AGENT_BODY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Cannot resolve a ticket with status ASSIGNED"));
     }
 }
