@@ -153,6 +153,7 @@ helpdesk-ticketing-system/
 │       │   ├── ApiIntegrationTestSupport.java     # shared end-to-end helpers
 │       │   ├── MutableClock.java                  # test clock that can be advanced
 │       │   ├── HelpDeskApplicationTests.java
+│       │   ├── exception/FrameworkErrorMappingTest.java
 │       │   ├── TicketApiIntegrationTest.java      # end-to-end, H2
 │       │   ├── TicketAgentWorkflowIntegrationTest.java
 │       │   ├── TicketAssignmentIntegrationTest.java
@@ -910,7 +911,12 @@ shape, so a client only ever has to parse one structure:
 | `MethodArgumentNotValidException` | `400 Bad Request` | `Validation failed`, plus `fieldErrors` |
 | `HttpMessageNotReadableException` | `400 Bad Request` | `Malformed or unreadable request body` |
 | `MethodArgumentTypeMismatchException` | `400 Bad Request` | `Invalid value for parameter 'x'` |
+| `NoResourceFoundException` (unknown URL) | `404 Not Found` | `No endpoint GET /api/...` |
+| other Spring MVC errors, e.g. unsupported method, unsupported content type, missing query parameter | their own status, e.g. `405`, `415`, `400` | Spring's short description, e.g. `Method 'PATCH' is not supported.` |
 | any other `Exception` | `500 Internal Server Error` | `An unexpected error occurred` |
+
+Genuine `500`s are logged in full on the server, with method and path, but
+the client only ever sees the generic message.
 
 ### Validation errors
 
@@ -952,6 +958,7 @@ needs neither a live database nor any environment variables:
 | `UserServiceTest` | unit (Mockito) | organization resolution, `SUPER_ADMIN` without an organization, rejection of an organization-scoped role with no organization, no password on the response record |
 | `TicketWorkflowServiceTest` | unit (Mockito) | every assignment rule: valid assignment and reassignment, idempotent same-agent assign, each non-admin role, inactive and cross-organization admin, each non-agent role, inactive and cross-organization agent, each non-assignable status, and that nothing is saved on any rejection; start and resolve by the assigned agent, refusal of every other actor (other agent, admin, customer, unassigned ticket, deactivated agent, changed role), every invalid source status, and `resolvedAt` handling; reassigning `IN_PROGRESS` tickets back to `ASSIGNED` without undoing same-agent progress; reassigning and restarting `REOPENED` tickets; reopen and close by every allowed and refused actor, every invalid status, reopen-window and admin-close-window boundaries against a fixed clock |
 | `TicketWorkflowPropertiesTest` | unit (Spring `Binder`) | `helpdesk.tickets.*` defaults, overrides from environment variables named as documented, rejection of negative windows |
+| `FrameworkErrorMappingTest` | web slice (`@WebMvcTest`) | unknown URL, unsupported method and unsupported content type keep their real `404`/`405`/`415` status in the standard error shape, without leaking class names |
 | `TicketControllerTest` | web slice (`@WebMvcTest`) | status codes, per-field validation messages, unknown enum handled as `400`, error shape, absence of password and nested entity internals, assign, start, resolve, close and reopen mapped to `200`/`400`/`403`/`409` |
 | `TicketApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | full organization to user to ticket flow through the real web, service and persistence layers, asserting no `password` or `hibernateLazyInitializer` anywhere in the payload |
 | `TicketAssignmentIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | assignment persisted and readable back, reassignment, and that cross-organization agents, cross-organization admins, non-admin actors, non-agent targets and unknown ids are rejected with the stored ticket left `OPEN` and unassigned |
@@ -991,6 +998,18 @@ All sensitive values are driven by environment variables:
 | `DB_PASSWORD` | PostgreSQL password |
 
 `ddl-auto=update` means Hibernate will automatically create or alter tables to match the entity definitions on startup.
+
+> **Note:** `update` adds missing tables and columns but never changes the
+> type of an existing column. The ticket `title` and `description` columns are
+> `varchar(200)` and `varchar(5000)` to match request validation. A database
+> created before that change still has `varchar(255)` for both, which rejects
+> longer descriptions with a `500`. Widen them once by hand:
+>
+> ```sql
+> ALTER TABLE tickets ALTER COLUMN description TYPE varchar(5000);
+> ```
+>
+> `title` can stay at `varchar(255)`, which already fits the 200-character limit.
 
 `open-in-view=false` is safe here because every entity-to-DTO mapping happens
 inside a transactional service method, so no lazy association is ever touched

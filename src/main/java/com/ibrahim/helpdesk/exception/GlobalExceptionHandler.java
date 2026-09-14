@@ -1,19 +1,26 @@
 package com.ibrahim.helpdesk.exception;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     @ExceptionHandler(OrganizationNotFoundException.class)
     public ResponseEntity<ApiErrorResponse> handleOrganizationNotFound(
@@ -108,9 +115,41 @@ public class GlobalExceptionHandler {
                         "Invalid value for parameter '" + ex.getName() + "'", request.getRequestURI()));
     }
 
+    /**
+     * Spring reports an unmapped URL as a missing static resource; for an API
+     * the useful message is which endpoint does not exist.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleNoEndpoint(
+            NoResourceFoundException ex, HttpServletRequest request) {
+
+        return notFound("No endpoint " + request.getMethod() + " " + request.getRequestURI(), request);
+    }
+
+    /**
+     * Last resort. Errors raised by Spring MVC itself, such as an unknown URL,
+     * an unsupported method or content type, or a missing query parameter,
+     * carry their own HTTP status and keep it. Anything else is a genuine
+     * server error: it is logged in full but reported to the client without
+     * detail.
+     */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleUnexpected(
             Exception ex, HttpServletRequest request) {
+
+        if (ex instanceof ErrorResponse frameworkError) {
+            HttpStatusCode code = frameworkError.getStatusCode();
+            HttpStatus status = HttpStatus.resolve(code.value());
+            String error = status != null ? status.getReasonPhrase() : String.valueOf(code.value());
+            String detail = frameworkError.getBody().getDetail();
+
+            return ResponseEntity
+                    .status(code)
+                    .body(ApiErrorResponse.of(code.value(), error,
+                            detail != null ? detail : error, request.getRequestURI()));
+        }
+
+        log.error("Unhandled exception for {} {}", request.getMethod(), request.getRequestURI(), ex);
 
         return ResponseEntity
                 .status(HttpStatus.INTERNAL_SERVER_ERROR)

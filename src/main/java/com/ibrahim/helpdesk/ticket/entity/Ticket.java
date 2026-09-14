@@ -18,10 +18,11 @@ public class Ticket {
     private Long id;
     private String ticketNumber;
 
-    @Column(nullable = false)
+    // Lengths match the Bean Validation limits on the ticket request DTOs.
+    @Column(nullable = false, length = 200)
     private String title;
 
-    @Column(nullable = false)
+    @Column(nullable = false, length = 5000)
     private String description;
 
     @Enumerated(EnumType.STRING)

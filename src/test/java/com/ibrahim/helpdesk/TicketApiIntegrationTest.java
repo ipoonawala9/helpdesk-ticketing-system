@@ -119,4 +119,32 @@ class TicketApiIntegrationTest {
                 .andExpect(jsonPath("$.fieldErrors.companyEmail")
                         .value("Company email must be a valid email address"));
     }
+
+    @Test
+    @DisplayName("a description at the 5000 character validation limit is stored, one over is a 400")
+    void descriptionLengthMatchesValidationLimit() throws Exception {
+        long organizationId = createOrganization();
+        long customerId = createCustomer(organizationId);
+
+        String atLimit = "x".repeat(5000);
+        String body = mockMvc.perform(post("/api/tickets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"%s","description":"%s","category":"OTHER","customerId":%d}
+                                """.formatted("t".repeat(200), atLimit, customerId)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+
+        long ticketId = com.jayway.jsonpath.JsonPath.parse(body).read("$.id", Integer.class).longValue();
+        mockMvc.perform(get("/api/tickets/{id}", ticketId))
+                .andExpect(jsonPath("$.description").value(atLimit));
+
+        mockMvc.perform(post("/api/tickets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"t","description":"%s","category":"OTHER","customerId":%d}
+                                """.formatted("x".repeat(5001), customerId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.description").value("Description must be at most 5000 characters"));
+    }
 }
