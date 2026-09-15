@@ -5,7 +5,12 @@ backend for everything; there is no mock data.
 
 ## Run it locally
 
-You need Node 22+ and a running backend (see the main README).
+You need Node 22+ and a running backend. The quickest way is Docker Compose from
+the repository root (see the main README):
+
+```bash
+docker compose up -d --build
+```
 
 ```bash
 npm install

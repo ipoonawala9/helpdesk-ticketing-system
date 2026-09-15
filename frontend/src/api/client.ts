@@ -8,6 +8,11 @@ import type { ApiErrorBody } from './types'
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '')
 
+const UNREACHABLE = "Can't reach the HelpDesk server. Check your connection and try again."
+
+/** Statuses a proxy or host returns when the API itself is down or starting up. */
+const GATEWAY_STATUSES = new Set([502, 503, 504])
+
 export class ApiError extends Error {
   readonly status: number
   readonly fieldErrors: Record<string, string>
@@ -76,7 +81,7 @@ export async function request<T>(method: string, path: string, options: RequestO
     })
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
-    throw new ApiError(0, "Can't reach the HelpDesk server. Check your connection and try again.")
+    throw new ApiError(0, UNREACHABLE)
   }
 
   if (response.status === 401 && token) {
@@ -94,6 +99,9 @@ export async function request<T>(method: string, path: string, options: RequestO
 }
 
 async function toApiError(response: Response): Promise<ApiError> {
+  if (GATEWAY_STATUSES.has(response.status)) {
+    return new ApiError(response.status, "The HelpDesk server isn't responding. Try again in a moment.")
+  }
   try {
     const body = (await response.json()) as Partial<ApiErrorBody>
     if (typeof body.message === 'string') {

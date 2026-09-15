@@ -5,3 +5,7 @@ target/
 .git/
 .idea/
 ss/
+
+# Local secrets must never end up in an image layer.
+.env
+.env.*

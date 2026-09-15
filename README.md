@@ -1719,36 +1719,35 @@ docker run -p 8080:8080 \
 
 ### Using Docker Compose (recommended)
 
-```yaml
-version: '3.8'
-services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: helpdesk
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: yourpassword
-    ports:
-      - "5432:5432"
+[`compose.yaml`](compose.yaml) runs PostgreSQL 17 and the API together, with
+the database kept in a named volume and both containers restarting with Docker.
 
-  app:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      DB_URL: jdbc:postgresql://db:5432/helpdesk
-      DB_USERNAME: postgres
-      DB_PASSWORD: yourpassword
-      JWT_SECRET: replace-with-a-random-value-of-at-least-32-characters
-      BOOTSTRAP_SUPER_ADMIN_EMAIL: admin@example.com
-      BOOTSTRAP_SUPER_ADMIN_PASSWORD: choose-a-strong-password
-    depends_on:
-      - db
-```
+1. Create your local settings. `.env` is ignored by git, so real values never
+   get committed:
 
-```bash
-docker compose up --build
-```
+   ```bash
+   cp .env.example .env
+   ```
+
+   Fill in `DB_PASSWORD`, `JWT_SECRET` (`openssl rand -base64 48`) and
+   `BOOTSTRAP_SUPER_ADMIN_PASSWORD`. Compose refuses to start if the database
+   password or JWT secret is missing.
+
+2. Start the stack:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+The API is on http://localhost:8080 and PostgreSQL on port `55432`, so it does
+not clash with another PostgreSQL on `5432`.
+
+| Task | Command |
+|---|---|
+| See status | `docker compose ps` |
+| Follow the API's logs | `docker compose logs -f api` |
+| Stop, keeping data | `docker compose down` |
+| Stop and delete all data | `docker compose down -v` |
 
 ---
 

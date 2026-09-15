@@ -82,6 +82,15 @@ describe('api client', () => {
     await expect(request('GET', '/api/tickets')).rejects.toMatchObject({ status: 0 })
   })
 
+  it.each([502, 503, 504])('explains a %i from a proxy as the server not responding, not as a raw status', async (status) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>Bad Gateway</html>', { status })))
+
+    const error = (await request('POST', '/api/auth/login', { anonymous: true }).catch((e: unknown) => e)) as ApiError
+
+    expect(error.status).toBe(status)
+    expect(error.message).toBe("The HelpDesk server isn't responding. Try again in a moment.")
+  })
+
   it('builds query strings with repeated values and skips empty ones', () => {
     expect(buildQuery({ status: ['OPEN', 'ASSIGNED'], q: '', page: 0, unassigned: undefined }))
       .toBe('?status=OPEN&status=ASSIGNED&page=0')
