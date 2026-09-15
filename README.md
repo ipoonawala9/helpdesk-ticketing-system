@@ -33,6 +33,7 @@ A RESTful backend API for managing support tickets across multiple organizations
 - [Exception Handling](#exception-handling)
 - [Testing](#testing)
 - [Configuration](#configuration)
+- [Frontend](#frontend)
 - [Running Locally](#running-locally)
 - [Running with Docker](#running-with-docker)
 - [Postman Screenshots](#postman-screenshots)
@@ -110,6 +111,7 @@ A reopened ticket goes back to its agent, who starts work on it again.
 | Boilerplate reduction | Lombok |
 | API Docs | springdoc-openapi (OpenAPI 3, Swagger UI) |
 | Build tool | Maven (Maven Wrapper included) |
+| Frontend | React 19, TypeScript, Vite, React Router, TanStack Query, Vitest |
 | Containerization | Docker (eclipse-temurin:25-jdk) |
 | Testing | JUnit 5, Mockito, AssertJ, MockMvc, Spring Security Test, H2 (in-memory), Testcontainers (PostgreSQL 17) |
 
@@ -238,6 +240,7 @@ helpdesk-ticketing-system/
 │       └── resources/
 │           ├── application.properties             # in-memory H2 (default)
 │           └── application-postgres.properties    # PostgreSQL 17 via Testcontainers
+├── frontend/                                      # React + TypeScript + Vite app, see frontend/README.md
 ├── ss/                                            # Postman screenshots
 ├── Dockerfile
 ├── mvnw / mvnw.cmd
@@ -1587,6 +1590,48 @@ environment, for example with `HELPDESK_TICKETS_ADMIN_CLOSE_AFTER=PT2H` or `HELP
 |---|---|---|
 | `helpdesk.tickets.admin-close-after` | `PT3H` | How long the customer has to close a resolved ticket before an org admin may close it instead |
 | `helpdesk.tickets.reopen-window` | `P7D` | How long after closure the customer may still reopen a ticket |
+
+---
+
+## Frontend
+
+A React + TypeScript + Vite app in [`frontend/`](frontend/README.md) covers every
+role's screens against the real API: customer, support agent, organization
+admin and super admin. It has protected, role-aware routes, a centralized API
+client, loading, empty and error states, confirmation dialogs, URL-based filters
+and a responsive layout. Details are in [frontend/README.md](frontend/README.md).
+
+### Run the whole stack locally
+
+1. Start the backend (see [Running Locally](#running-locally) or
+   [Running with Docker](#running-with-docker)).
+2. Start the frontend:
+
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+3. Open http://localhost:5173 and sign in. To try every role, load demo data
+   into an empty local database with `npm run seed:demo` (see
+   [frontend/README.md](frontend/README.md#demo-data)).
+
+### Deploying the frontend on Render
+
+Create a **Static Site** from this repository:
+
+| Setting | Value |
+|---|---|
+| Root directory | `frontend` |
+| Build command | `npm ci && npm run build` |
+| Publish directory | `dist` |
+| Environment variable | `VITE_API_BASE_URL` = the backend's URL, e.g. `https://helpdesk-ticketing-system-mi7f.onrender.com` |
+| Redirects/Rewrites | Rewrite `/*` to `/index.html`, so links such as `/tickets/42` load the app |
+
+Then allow the site to call the API by setting `CORS_ALLOWED_ORIGINS` on the
+**backend** service to the static site's URL, e.g.
+`https://helpdesk-web.onrender.com`.
 
 ---
 

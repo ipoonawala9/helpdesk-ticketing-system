@@ -40,3 +40,5 @@ target/
 application-local.properties
 
 .DS_Store
+# Local editor/agent tooling
+.claude/

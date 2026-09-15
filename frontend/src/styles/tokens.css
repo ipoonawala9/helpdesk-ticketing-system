@@ -1,0 +1,50 @@
+/*
+ * HelpDesk design tokens. "Service counter": graphite ink on cool paper, with
+ * amber ticket cardstock used in one place, the ticket stub.
+ */
+:root {
+  --ink: #16202a;
+  --ink-soft: #2b3743;
+  --muted: #5b6773;
+  --paper: #edf0f3;
+  --card: #ffffff;
+  --rule: #d3d9df;
+  --rule-strong: #b7c0c8;
+  --stub: #f4b740;
+  --stub-edge: #d99a1e;
+  --alert: #c23a2b;
+  --alert-wash: #fbeae7;
+  --ok: #2e7a55;
+  --ok-wash: #e4f1ea;
+
+  /* Ordinal ramp for lifecycle stages; validated for monotone lightness and light-end contrast. */
+  --stage-0: #a2b2c1;
+  --stage-1: #8093a6;
+  --stage-2: #627a8f;
+  --stage-3: #476076;
+  --stage-4: #30475d;
+  --stage-5: #1c2f42;
+
+  --font-display: 'Archivo Variable', 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+  --font-body: 'Public Sans Variable', 'Public Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-md: 1.0625rem;
+  --text-lg: 1.375rem;
+  --text-xl: 1.875rem;
+
+  --radius: 6px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --sidebar-width: 236px;
+  --focus-ring: 0 0 0 2px var(--card), 0 0 0 4px var(--ink);
+}
