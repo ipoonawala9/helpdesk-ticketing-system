@@ -1,0 +1,7 @@
+# Only the backend is built into the image.
+frontend/
+**/node_modules/
+target/
+.git/
+.idea/
+ss/

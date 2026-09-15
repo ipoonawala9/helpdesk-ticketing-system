@@ -1509,6 +1509,7 @@ database-specific behaviour: constraints, `ON DELETE` rules, index creation,
 | `TicketPriorityIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | priority set on create for each level; a client-supplied `priority` ignored; recalculation on edit in both directions; escalation over three reopens capped at `HIGH`; startup backfill filling only missing priorities |
 | `TicketSearchIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | walking every page without repeats or gaps; priority sorted by severity and status by lifecycle; combined status, category, agent and unassigned filters; search over number, title and description; `%` and `_` matched literally; filters unable to widen scope; user and organization search |
 | `DatabaseConstraintsIntegrationTest` | end-to-end (`@SpringBootTest` + JDBC) | with plain SQL: deleting an agent unassigns their tickets and orphans their messages; customers and organizations in use cannot be deleted; unique ticket numbers and emails; `NOT NULL` on every required column; enum check constraints; presence of every index |
+| `CorsAndTimeIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | preflight and actual requests allowed for the configured origin without credentials, other origins refused; the application and its timestamps in UTC |
 | `OpenApiIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | Swagger UI served; bearer JWT scheme required by default; login public; `ApiErrorResponse` documented on error responses; no `currentUserId` parameter leaked; list parameters documented; every operation tagged and summarised |
 | `TicketReopenCloseIntegrationTest` | end-to-end (`@SpringBootTest` + MockMvc) | close, reopen, re-resolve and close again with `reopenCount` persisted; admin close refused before 3 hours and allowed after; reopen refused after 7 days; reassignment of a reopened ticket; other customers, the agent and a cross-organization admin forbidden. Time windows are tested by advancing a `MutableClock` rather than waiting |
 
@@ -1555,6 +1556,7 @@ All sensitive values are driven by environment variables:
 | `BOOTSTRAP_SUPER_ADMIN_EMAIL` | Email of the first super admin, created on startup if it does not exist |
 | `BOOTSTRAP_SUPER_ADMIN_PASSWORD` | That super admin's initial password |
 | `BOOTSTRAP_SUPER_ADMIN_NAME` | Optional display name, default `Super Admin` |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API from another site, such as the hosted frontend (`https://helpdesk-web.onrender.com`). Empty by default, which allows no cross-origin calls. `*` is refused |
 
 `ddl-auto=update` means Hibernate will automatically create or alter tables to match the entity definitions on startup.
 
@@ -1569,6 +1571,10 @@ All sensitive values are driven by environment variables:
 > ```
 >
 > `title` can stay at `varchar(255)`, which already fits the 200-character limit.
+
+**Time zone.** The application always runs in UTC, whatever the host's zone.
+Timestamps in responses, such as `createdAt`, carry no zone and are UTC;
+clients convert them to the viewer's local time.
 
 `open-in-view=false` is safe here because every entity-to-DTO mapping happens
 inside a transactional service method, so no lazy association is ever touched
