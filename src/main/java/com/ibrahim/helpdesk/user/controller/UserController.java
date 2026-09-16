@@ -56,6 +56,20 @@ public class UserController {
                 PageRequests.of(page, size, sort, UserService.SORTABLE_FIELDS));
     }
 
+    @Operation(summary = "Deactivate a user: they can no longer sign in, and existing access tokens stop working")
+    @PostMapping("/{id}/deactivate")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'ORG_ADMIN')")
+    public UserResponse deactivateUser(@PathVariable Long id, @CurrentUserId Long currentUserId) {
+        return userService.setActive(id, false, currentUserId);
+    }
+
+    @Operation(summary = "Reactivate a deactivated user")
+    @PostMapping("/{id}/activate")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'ORG_ADMIN')")
+    public UserResponse activateUser(@PathVariable Long id, @CurrentUserId Long currentUserId) {
+        return userService.setActive(id, true, currentUserId);
+    }
+
     @Operation(summary = "Get one user within the caller's scope")
     @GetMapping("/{id}")
     public UserResponse getUserById(@PathVariable Long id, @CurrentUserId Long currentUserId) {

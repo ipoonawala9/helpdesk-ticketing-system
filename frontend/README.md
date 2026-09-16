@@ -120,3 +120,20 @@ punches each lifecycle stop the ticket has passed. Type is Archivo (headings),
 Public Sans (text) and IBM Plex Mono (ticket numbers and times), all bundled
 with the app. The status breakdown uses a single-hue ramp validated for
 distinct steps and contrast, because statuses are ordered stages.
+
+### Security headers
+
+`public/_headers` sets a Content-Security-Policy and related headers for the
+built site. Cloudflare Pages and Netlify apply it automatically; on other
+hosts, configure the same headers. Scripts, styles, fonts and images load only
+from the site itself; API calls may go to the site or any HTTPS origin, which
+covers the separately hosted API. `public/_redirects` serves `index.html` for
+every path, so links such as `/tickets/42` load the app.
+
+The production build has been checked in a browser with this policy enforced,
+and nothing is blocked.
+
+### Demo data safety
+
+Demo accounts share a published password, so `npm run seed:demo` refuses any
+API URL other than `localhost` unless `ALLOW_REMOTE_SEED=yes` is set.

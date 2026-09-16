@@ -464,6 +464,52 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
   emails, so response time does not reveal it either.
 - Tokens are valid for 1 hour. There is no refresh token; the client logs in
   again.
+- **Password guessing is limited.** After 5 wrong passwords for one email
+  within 15 minutes, sign-in for that email returns `429 Too Many Requests`
+  with a `Retry-After` header, without checking the password, until the 15
+  minutes have passed. Unknown emails are limited the same way, so the limit
+  reveals nothing. A correct password clears the count. The count is kept in
+  memory per running instance. The trade-off of counting per email is that
+  someone who knows an email can block that account for 15 minutes at a time.
+
+### Changing your own password
+
+```
+POST /api/auth/password
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+```json
+{
+  "currentPassword": "correct-horse",
+  "newPassword": "a-much-longer-passphrase"
+}
+```
+
+Response `204 No Content`. A wrong current password is a `400` with
+`fieldErrors.currentPassword`, not a `401`, so clients do not mistake it for an
+expired session. Wrong current passwords count towards the same guessing limit
+as sign-in, so a stolen access token cannot be used to guess the password. The
+new password must be 8 to 100 characters and different from the current one.
+Tokens issued before the change stay valid until they expire.
+
+### Deactivating accounts
+
+```
+POST /api/users/{id}/deactivate
+POST /api/users/{id}/activate
+```
+
+Both return the updated user. A deactivated user cannot sign in, and because
+every request reloads the user, **any token they already hold stops working on
+their next request**. Their tickets and messages are kept; reassign a
+deactivated agent's open tickets.
+
+- A `SUPER_ADMIN` can change any account except their own.
+- An `ORG_ADMIN` can change agents and customers of their own organization;
+  another admin is `403`, anyone outside their organization is `404`.
+- Nobody can change their own account (`400`).
 
 ### How tokens are checked
 
@@ -495,12 +541,14 @@ parameter identifies who is acting; such a field, if sent, is ignored.
 |---|---|---|
 | `POST /api/auth/login` | anyone | |
 | `GET /api/auth/me` | any authenticated user | |
+| `POST /api/auth/password` | any authenticated user | their own password, with the current one |
 | `POST /api/organizations` | `SUPER_ADMIN` | |
 | `GET /api/organizations` | `SUPER_ADMIN` | |
 | `GET /api/organizations/{id}` | any | `SUPER_ADMIN`, or a member of that organization; otherwise `404` |
 | `POST /api/users` | `SUPER_ADMIN`, `ORG_ADMIN` | `ORG_ADMIN`: only `CUSTOMER` and `SUPPORT_AGENT`, only in their own organization |
 | `GET /api/users` | `SUPER_ADMIN`, `ORG_ADMIN` | `ORG_ADMIN`: own organization only |
 | `GET /api/users/{id}` | any | yourself, `SUPER_ADMIN`, or an `ORG_ADMIN` of the user's organization; otherwise `404` |
+| `POST /api/users/{id}/deactivate`, `/activate` | `SUPER_ADMIN`, `ORG_ADMIN` | not yourself; `ORG_ADMIN`: agents and customers of their own organization |
 | `POST /api/tickets` | `CUSTOMER` | the ticket belongs to the authenticated customer |
 | `GET /api/tickets` | any | each role sees only its scope, see [Multi-Tenant Isolation](#multi-tenant-isolation) |
 | `GET /api/tickets/{id}` | any | within the caller's scope; otherwise `404` |
@@ -512,7 +560,8 @@ parameter identifies who is acting; such a field, if sent, is ignored.
 | `POST /api/tickets/{id}/close` | `CUSTOMER`, `ORG_ADMIN` | the ticket's customer, or an admin of its organization after 3 hours |
 | `POST /api/tickets/{id}/messages` | `CUSTOMER`, `SUPPORT_AGENT` | the ticket's customer or assigned agent |
 | `GET /api/tickets/{id}/messages` | `CUSTOMER`, `SUPPORT_AGENT`, `ORG_ADMIN` | the ticket's customer, assigned agent, or an admin of its organization |
-| `/v3/api-docs`, `/swagger-ui/**` | anyone | |
+| `/v3/api-docs`, `/swagger-ui/**` | anyone | can be turned off with `API_DOCS_ENABLED=false` |
+| `GET /actuator/health`, `/actuator/health/liveness`, `/readiness` | anyone | status only, no details; no other actuator endpoint is exposed |
 
 Role checks are declared with `@PreAuthorize` on each controller method and
 run before anything is looked up, so a role that may never call an endpoint
@@ -1557,8 +1606,9 @@ All sensitive values are driven by environment variables:
 | `DB_PASSWORD` | PostgreSQL password |
 | `JWT_SECRET` | **Required.** Random signing key of at least 32 characters. The application refuses to start without it. Generate one with `openssl rand -base64 48` |
 | `BOOTSTRAP_SUPER_ADMIN_EMAIL` | Email of the first super admin, created on startup if it does not exist |
-| `BOOTSTRAP_SUPER_ADMIN_PASSWORD` | That super admin's initial password |
+| `BOOTSTRAP_SUPER_ADMIN_PASSWORD` | That super admin's initial password, at least 12 characters; the application refuses to start with a shorter one. After the first start, sign in and change it, then remove the variable |
 | `BOOTSTRAP_SUPER_ADMIN_NAME` | Optional display name, default `Super Admin` |
+| `API_DOCS_ENABLED` | `true` (default) serves Swagger UI and the OpenAPI document; `false` hides both |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API from another site, such as the hosted frontend (`https://helpdesk-web.onrender.com`). Empty by default, which allows no cross-origin calls. `*` is refused |
 
 `ddl-auto=update` means Hibernate will automatically create or alter tables to match the entity definitions on startup.
@@ -1574,6 +1624,20 @@ All sensitive values are driven by environment variables:
 > ```
 >
 > `title` can stay at `varchar(255)`, which already fits the 200-character limit.
+
+**Health checks.** Point a hosting platform's health check at
+`/actuator/health/liveness`. It does not depend on the database, so a slow
+database wake-up does not get the service restarted. `/actuator/health`
+includes the database.
+
+**Behind a proxy.** `server.forward-headers-strategy=native` honours
+`X-Forwarded-*` headers from private-network proxies, so URLs the API
+generates, such as Swagger's, use `https` on hosting platforms.
+
+**Memory.** The container sizes the JVM heap from its memory limit. Measured
+under load, the API needs a **512 MB** instance: it used about 315 MB and
+served 600 requests without errors at 512 MB, and it is killed on startup at
+256 MB even with tuning.
 
 **Time zone.** The application always runs in UTC, whatever the host's zone.
 Timestamps in responses, such as `createdAt`, carry no zone and are UTC;
@@ -1680,21 +1744,18 @@ export BOOTSTRAP_SUPER_ADMIN_PASSWORD=choose-a-strong-password
 
 ### Dockerfile
 
-```dockerfile
-FROM eclipse-temurin:25-jdk
+The [`Dockerfile`](Dockerfile) builds in two stages:
 
-WORKDIR /app
+1. **Build:** the full JDK compiles the jar with Maven. Dependencies are
+   downloaded in their own layer, so they are cached until `pom.xml` changes.
+2. **Run:** only a Java 25 **JRE** and the jar, running as an unprivileged
+   `helpdesk` user rather than root. The JVM sizes its heap from the
+   container's memory limit and exits on out-of-memory so the platform
+   restarts it cleanly.
 
-COPY . .
-
-RUN chmod +x mvnw
-
-RUN ./mvnw clean package -DskipTests
-
-EXPOSE 8080
-
-CMD ["sh", "-c", "java -jar target/*.jar"]
-```
+The image is about 620 MB. `.dockerignore` keeps `.env` files, the frontend,
+build output and Git data out of the build context, so local secrets never end
+up in an image layer.
 
 ### Build the image
 
@@ -1740,7 +1801,9 @@ the database kept in a named volume and both containers restarting with Docker.
    ```
 
 The API is on http://localhost:8080 and PostgreSQL on port `55432`, so it does
-not clash with another PostgreSQL on `5432`.
+not clash with another PostgreSQL on `5432`. Both are published only on
+`127.0.0.1`, so other devices on your network cannot reach them. Compose marks
+the API healthy once `/actuator/health/liveness` reports `UP`.
 
 | Task | Command |
 |---|---|

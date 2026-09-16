@@ -10,6 +10,17 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "helpdesk.bootstrap.super-admin")
 public record BootstrapProperties(String email, String password, String name) {
 
+    /** The first super admin controls every organization, so its password must be substantial. */
+    static final int MIN_PASSWORD_LENGTH = 12;
+
+    public BootstrapProperties {
+        if (email != null && !email.isBlank() && password != null && !password.isBlank()
+                && password.length() < MIN_PASSWORD_LENGTH) {
+            throw new IllegalStateException("BOOTSTRAP_SUPER_ADMIN_PASSWORD must be at least "
+                    + MIN_PASSWORD_LENGTH + " characters");
+        }
+    }
+
     public boolean isConfigured() {
         return email != null && !email.isBlank() && password != null && !password.isBlank();
     }

@@ -18,6 +18,8 @@ export const authApi = {
   login: (email: string, password: string) =>
     request<LoginResponse>('POST', '/api/auth/login', { body: { email, password }, anonymous: true }),
   me: () => request<User>('GET', '/api/auth/me'),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<void>('POST', '/api/auth/password', { body: { currentPassword, newPassword } }),
 }
 
 export const ticketsApi = {
@@ -46,6 +48,8 @@ export const usersApi = {
   list: (filters: UserFilters = {}) => request<Page<User>>('GET', '/api/users', { query: { ...filters } }),
   get: (id: number) => request<User>('GET', `/api/users/${id}`),
   create: (input: CreateUserInput) => request<User>('POST', '/api/users', { body: input }),
+  deactivate: (id: number) => request<User>('POST', `/api/users/${id}/deactivate`),
+  activate: (id: number) => request<User>('POST', `/api/users/${id}/activate`),
 }
 
 export const organizationsApi = {

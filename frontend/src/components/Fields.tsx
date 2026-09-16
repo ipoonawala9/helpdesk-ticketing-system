@@ -7,8 +7,9 @@ interface FieldProps {
   className?: string
 }
 
+// While a field shows an error, the error replaces its hint.
 function describedBy(id: string, hint?: ReactNode, error?: string) {
-  return [hint ? `${id}-hint` : '', error ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined
+  return [hint && !error ? `${id}-hint` : '', error ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined
 }
 
 export function TextField({ label, hint, error, className, ...input }: FieldProps & InputHTMLAttributes<HTMLInputElement>) {
@@ -17,7 +18,7 @@ export function TextField({ label, hint, error, className, ...input }: FieldProp
     <div className={`field ${className ?? ''}`}>
       <label className="field-label" htmlFor={id}>{label}</label>
       <input id={id} className="input" aria-invalid={error ? true : undefined} aria-describedby={describedBy(id, hint, error)} {...input} />
-      {hint && <span id={`${id}-hint`} className="field-hint">{hint}</span>}
+      {hint && !error && <span id={`${id}-hint`} className="field-hint">{hint}</span>}
       {error && <span id={`${id}-error`} className="field-error">{error}</span>}
     </div>
   )
@@ -31,7 +32,7 @@ export function SelectField({ label, hint, error, className, children, ...select
       <select id={id} className="select" aria-invalid={error ? true : undefined} aria-describedby={describedBy(id, hint, error)} {...select}>
         {children}
       </select>
-      {hint && <span id={`${id}-hint`} className="field-hint">{hint}</span>}
+      {hint && !error && <span id={`${id}-hint`} className="field-hint">{hint}</span>}
       {error && <span id={`${id}-error`} className="field-error">{error}</span>}
     </div>
   )

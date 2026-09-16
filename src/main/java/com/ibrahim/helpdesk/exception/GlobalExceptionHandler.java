@@ -97,6 +97,26 @@ public class GlobalExceptionHandler {
         return conflict("The request conflicts with existing data", request);
     }
 
+    @ExceptionHandler(TooManyLoginAttemptsException.class)
+    public ResponseEntity<ApiErrorResponse> handleTooManyLoginAttempts(
+            TooManyLoginAttemptsException ex, HttpServletRequest request) {
+
+        return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)
+                // Rounded up, so a client that waits exactly this long is no longer blocked.
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(Math.max(1, (ex.getRetryAfter().toMillis() + 999) / 1000)))
+                .body(ApiErrorResponse.of(429, "Too Many Requests", ex.getMessage(), request.getRequestURI()));
+    }
+
+    @ExceptionHandler(FieldValidationException.class)
+    public ResponseEntity<ApiErrorResponse> handleFieldValidation(
+            FieldValidationException ex, HttpServletRequest request) {
+
+        return ResponseEntity
+                .badRequest()
+                .body(ApiErrorResponse.validation(ex.getMessage(), request.getRequestURI(), ex.getFieldErrors()));
+    }
+
     @ExceptionHandler(InvalidCredentialsException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidCredentials(
             InvalidCredentialsException ex, HttpServletRequest request) {

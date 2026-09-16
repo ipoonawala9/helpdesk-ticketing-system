@@ -17,6 +17,14 @@ const SUPER_EMAIL = process.env.SUPER_ADMIN_EMAIL
 const SUPER_PASSWORD = process.env.SUPER_ADMIN_PASSWORD
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD ?? 'demo-password-123'
 
+// Demo accounts share a published password, so they must never reach a real deployment.
+const host = new URL(API).hostname
+if (!['localhost', '127.0.0.1', '::1', '[::1]'].includes(host) && process.env.ALLOW_REMOTE_SEED !== 'yes') {
+  console.error(`Refusing to seed ${API}: demo accounts use a shared, published password.`)
+  console.error('Seed only a local backend. To seed a throwaway remote demo anyway, set ALLOW_REMOTE_SEED=yes.')
+  process.exit(1)
+}
+
 if (!SUPER_EMAIL || !SUPER_PASSWORD) {
   console.error('Set SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD to the bootstrap super admin.')
   process.exit(1)

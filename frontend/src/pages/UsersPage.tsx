@@ -1,10 +1,11 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { organizationsApi, usersApi } from '../api/endpoints'
-import type { Role, UserFilters } from '../api/types'
+import type { Role, User, UserFilters } from '../api/types'
+import { ConfirmDialog } from '../components/Dialog'
 import { useCurrentUser } from '../auth/AuthContext'
-import { EmptyState, ErrorState, SkeletonRows } from '../components/Feedback'
+import { EmptyState, ErrorState, SkeletonRows, errorMessage } from '../components/Feedback'
 import { SelectField, TextField } from '../components/Fields'
 import { Pagination } from '../components/Pagination'
 import { CreateUserDialog } from '../components/UserDialogs'
@@ -12,6 +13,7 @@ import { ROLE_LABEL, initials } from '../lib/format'
 import { useDebounced, useDocumentTitle } from '../lib/hooks'
 import { rolePermissions } from '../lib/permissions'
 import { queryKeys } from '../lib/queryKeys'
+import { notify } from '../lib/toast'
 
 const ROLES: Role[] = ['ORG_ADMIN', 'SUPPORT_AGENT', 'CUSTOMER', 'SUPER_ADMIN']
 
@@ -21,6 +23,24 @@ export function UsersPage() {
   useDocumentTitle(isSuper ? 'People' : 'Agents & customers')
   const [params, setParams] = useSearchParams()
   const [adding, setAdding] = useState(false)
+  const [deactivating, setDeactivating] = useState<User | null>(null)
+  const queryClient = useQueryClient()
+  const setActive = useMutation({
+    mutationFn: ({ person, active }: { person: User; active: boolean }) =>
+      active ? usersApi.activate(person.id) : usersApi.deactivate(person.id),
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.users })
+      setDeactivating(null)
+      notify(updated.active ? `${updated.name} can sign in again.` : `${updated.name} can no longer sign in.`)
+    },
+    onError: (error) => {
+      setDeactivating(null)
+      notify(errorMessage(error), 'error')
+    },
+  })
+  // Mirrors the backend: nobody changes their own account, and org admins manage only agents and customers.
+  const canToggle = (person: User) => person.id !== me.id
+    && (isSuper || person.role === 'SUPPORT_AGENT' || person.role === 'CUSTOMER')
   const [search, setSearch] = useState(params.get('q') ?? '')
   const q = useDebounced(search)
 
@@ -108,7 +128,7 @@ export function UsersPage() {
                     <th scope="col">Role</th>
                     {isSuper && <th scope="col">Organization</th>}
                     <th scope="col">Phone</th>
-                    {!isSuper && <th scope="col"><span className="sr-only">Tickets</span></th>}
+                    <th scope="col"><span className="sr-only">Actions</span></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -126,16 +146,27 @@ export function UsersPage() {
                       <td>{ROLE_LABEL[person.role]}</td>
                       {isSuper && <td data-hide-mobile>{person.organization?.name ?? <span className="muted">—</span>}</td>}
                       <td data-hide-mobile>{person.phoneNumber || <span className="muted">—</span>}</td>
-                      {!isSuper && (
-                        <td data-hide-mobile style={{ textAlign: 'right' }}>
-                          <Link
-                            className="button button-quiet button-small"
-                            to={person.role === 'SUPPORT_AGENT' ? `/tickets?assignedAgentId=${person.id}` : `/tickets?customerId=${person.id}`}
-                          >
-                            {person.role === 'SUPPORT_AGENT' ? 'Assigned tickets' : 'Their tickets'}
-                          </Link>
-                        </td>
-                      )}
+                      <td data-wide>
+                        <div className="row" style={{ justifyContent: 'flex-end' }}>
+                          {!isSuper && (person.role === 'SUPPORT_AGENT' || person.role === 'CUSTOMER') && (
+                            <Link
+                              className="button button-quiet button-small"
+                              to={person.role === 'SUPPORT_AGENT' ? `/tickets?assignedAgentId=${person.id}` : `/tickets?customerId=${person.id}`}
+                            >
+                              {person.role === 'SUPPORT_AGENT' ? 'Assigned tickets' : 'Their tickets'}
+                            </Link>
+                          )}
+                          {canToggle(person) && (person.active ? (
+                            <button type="button" className="button button-quiet button-small" style={{ color: 'var(--alert)' }} onClick={() => setDeactivating(person)}>
+                              Deactivate
+                            </button>
+                          ) : (
+                            <button type="button" className="button button-secondary button-small" disabled={setActive.isPending} onClick={() => setActive.mutate({ person, active: true })}>
+                              Reactivate
+                            </button>
+                          ))}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -145,6 +176,20 @@ export function UsersPage() {
           </div>
         )}
       </section>
+
+      <ConfirmDialog
+        open={deactivating !== null}
+        title={`Deactivate ${deactivating?.name ?? ''}?`}
+        confirmLabel="Deactivate"
+        tone="danger"
+        busy={setActive.isPending}
+        onCancel={() => setDeactivating(null)}
+        onConfirm={() => deactivating && setActive.mutate({ person: deactivating, active: false })}
+      >
+        {deactivating?.role === 'SUPPORT_AGENT'
+          ? 'They are signed out and can no longer sign in. Tickets assigned to them stay assigned, so reassign any that are still open.'
+          : 'They are signed out and can no longer sign in. Their tickets and messages are kept, and you can reactivate them later.'}
+      </ConfirmDialog>
 
       <CreateUserDialog
         key={`${role}-${organizationId}`}

@@ -133,6 +133,43 @@ public class UserService {
         return PageResponse.of(users, UserMapper::toResponse);
     }
 
+    /**
+     * Blocks or restores a user's access. A deactivated user cannot sign in,
+     * and any access token they already hold stops working on their next
+     * request. Their tickets and messages are kept; an administrator
+     * reassigns a deactivated agent's tickets.
+     *
+     * <p>A SUPER_ADMIN may change anyone except themselves. An ORG_ADMIN may
+     * change agents and customers of their own organization; anyone else is
+     * reported as not found or forbidden, as for other user operations.
+     */
+    @Transactional
+    public UserResponse setActive(Long targetId, boolean active, Long actorId) {
+        User actor = findOrThrow(actorId);
+        if (Objects.equals(targetId, actor.getId())) {
+            throw new BusinessRuleException("You cannot change whether your own account is active");
+        }
+
+        User target = switch (actor.getRole()) {
+            case SUPER_ADMIN -> findOrThrow(targetId);
+            case ORG_ADMIN -> {
+                if (actor.getOrganization() == null) {
+                    throw new UserNotFoundException(targetId);
+                }
+                User inOrganization = findInOrganizationOrThrow(targetId, actor.getOrganization().getId());
+                if (!ORG_ADMIN_CREATABLE_ROLES.contains(inOrganization.getRole())) {
+                    throw new ForbiddenOperationException(
+                            "Organization administrators can only activate or deactivate agents and customers");
+                }
+                yield inOrganization;
+            }
+            default -> throw new ForbiddenOperationException("Only administrators can activate or deactivate users");
+        };
+
+        target.setActive(active);
+        return UserMapper.toResponse(userRepository.save(target));
+    }
+
     /** A user who belongs to the given organization; anyone else is reported as not found. */
     @Transactional(readOnly = true)
     public User findInOrganizationOrThrow(Long userId, Long organizationId) {

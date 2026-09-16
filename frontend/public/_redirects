@@ -1,0 +1,2 @@
+# Single-page app: serve index.html for every path so links like /tickets/42 load.
+/*    /index.html   200

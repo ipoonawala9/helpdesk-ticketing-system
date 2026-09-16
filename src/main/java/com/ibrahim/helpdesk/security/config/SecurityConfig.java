@@ -1,5 +1,6 @@
 package com.ibrahim.helpdesk.security.config;
 
+import com.ibrahim.helpdesk.security.auth.LoginThrottleProperties;
 import com.ibrahim.helpdesk.security.auth.EmailUserDetailsService;
 import com.ibrahim.helpdesk.security.jwt.DatabaseUserJwtAuthenticationConverter;
 import com.ibrahim.helpdesk.security.jwt.JwtProperties;
@@ -48,7 +49,7 @@ import javax.crypto.spec.SecretKeySpec;
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-@EnableConfigurationProperties({JwtProperties.class, CorsProperties.class})
+@EnableConfigurationProperties({JwtProperties.class, CorsProperties.class, LoginThrottleProperties.class})
 public class SecurityConfig {
 
     @Bean
@@ -74,6 +75,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers("/error").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(resourceServer -> resourceServer
