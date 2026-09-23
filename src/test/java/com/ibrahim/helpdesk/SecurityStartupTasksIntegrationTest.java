@@ -2,6 +2,7 @@ package com.ibrahim.helpdesk;
 
 import com.ibrahim.helpdesk.organization.entity.Organization;
 import com.ibrahim.helpdesk.organization.repository.OrganizationRepository;
+import com.ibrahim.helpdesk.security.bootstrap.BootstrapProperties;
 import com.ibrahim.helpdesk.security.bootstrap.SecurityStartupTasks;
 import com.ibrahim.helpdesk.user.entity.User;
 import com.ibrahim.helpdesk.user.entity.UserRole;
@@ -83,5 +84,48 @@ class SecurityStartupTasksIntegrationTest extends ApiIntegrationTestSupport {
         // Restore the configured password for other tests sharing this database.
         admin.setPassword(passwordEncoder.encode(SUPER_ADMIN_PASSWORD));
         userRepository.save(admin);
+    }
+
+    @Test
+    @DisplayName("an existing super admin keeps its password when the configured one changes")
+    void existingSuperAdminKeepsItsPassword() {
+        User admin = userRepository.findByEmailIgnoreCase(SUPER_ADMIN_EMAIL).orElseThrow();
+        String before = admin.getPassword();
+
+        // The configured password in application.properties differs from a password set later.
+        admin.setPassword(passwordEncoder.encode("changed-in-the-app"));
+        userRepository.save(admin);
+
+        startupTasks.createBootstrapSuperAdmin();
+
+        String after = userRepository.findByEmailIgnoreCase(SUPER_ADMIN_EMAIL).orElseThrow().getPassword();
+        assertThat(passwordEncoder.matches("changed-in-the-app", after)).isTrue();
+        assertThat(passwordEncoder.matches(SUPER_ADMIN_PASSWORD, after)).isFalse();
+
+        // Put the fixture back for the other tests in this context.
+        admin.setPassword(before);
+        userRepository.save(admin);
+    }
+
+    @Test
+    @DisplayName("an explicit reset restores the configured password and reactivates the account")
+    void explicitResetRestoresConfiguredPassword() {
+        User admin = userRepository.findByEmailIgnoreCase(SUPER_ADMIN_EMAIL).orElseThrow();
+        String before = admin.getPassword();
+        admin.setPassword(passwordEncoder.encode("forgotten"));
+        admin.setActive(false);
+        userRepository.save(admin);
+
+        // What BOOTSTRAP_SUPER_ADMIN_RESET_PASSWORD=true does on the next start.
+        new SecurityStartupTasks(userRepository, passwordEncoder,
+                new BootstrapProperties(SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD, "Super Admin", true))
+                .createBootstrapSuperAdmin();
+
+        User reset = userRepository.findByEmailIgnoreCase(SUPER_ADMIN_EMAIL).orElseThrow();
+        assertThat(passwordEncoder.matches(SUPER_ADMIN_PASSWORD, reset.getPassword())).isTrue();
+        assertThat(reset.getActive()).isTrue();
+
+        reset.setPassword(before);
+        userRepository.save(reset);
     }
 }

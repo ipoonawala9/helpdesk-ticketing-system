@@ -13,7 +13,7 @@ class BootstrapPropertiesTest {
     @Test
     @DisplayName("a configured super admin password shorter than 12 characters stops startup")
     void rejectsShortPassword() {
-        assertThatThrownBy(() -> new BootstrapProperties("root@example.test", "short-pass1", null))
+        assertThatThrownBy(() -> new BootstrapProperties("root@example.test", "short-pass1", null, false))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("BOOTSTRAP_SUPER_ADMIN_PASSWORD must be at least 12 characters");
     }
@@ -21,8 +21,8 @@ class BootstrapPropertiesTest {
     @Test
     @DisplayName("12 characters is enough, and leaving the bootstrap unset is allowed")
     void acceptsLongPasswordOrUnset() {
-        assertThatNoException().isThrownBy(() -> new BootstrapProperties("root@example.test", "twelve-chars", null));
-        assertThat(new BootstrapProperties("", "", null).isConfigured()).isFalse();
-        assertThat(new BootstrapProperties(null, null, null).isConfigured()).isFalse();
+        assertThatNoException().isThrownBy(() -> new BootstrapProperties("root@example.test", "twelve-chars", null, false));
+        assertThat(new BootstrapProperties("", "", null, false).isConfigured()).isFalse();
+        assertThat(new BootstrapProperties(null, null, null, false).isConfigured()).isFalse();
     }
 }

@@ -1,7 +1,8 @@
-import { Navigate, createBrowserRouter } from 'react-router'
+import { createBrowserRouter } from 'react-router'
 import { RequireAuth, RequireRole } from './auth/guards'
 import { AppShell } from './components/AppShell'
 import { DashboardPage } from './pages/DashboardPage'
+import { LandingPage } from './pages/LandingPage'
 import { LoginPage } from './pages/LoginPage'
 import { NewTicketPage } from './pages/NewTicketPage'
 import { NotFoundPage } from './pages/NotFoundPage'
@@ -12,11 +13,11 @@ import { TicketsPage } from './pages/TicketsPage'
 import { UsersPage } from './pages/UsersPage'
 
 export const router = createBrowserRouter([
+  { path: '/', element: <LandingPage /> },
   { path: '/login', element: <LoginPage /> },
   {
     element: <RequireAuth><AppShell /></RequireAuth>,
     children: [
-      { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: '/dashboard', element: <DashboardPage /> },
       { path: '/tickets', element: <TicketsPage /> },
       { path: '/tickets/new', element: <RequireRole roles={['CUSTOMER']}><NewTicketPage /></RequireRole> },

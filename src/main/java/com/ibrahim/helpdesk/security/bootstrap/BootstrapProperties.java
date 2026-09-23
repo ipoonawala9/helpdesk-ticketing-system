@@ -8,7 +8,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * email or password empty to skip.
  */
 @ConfigurationProperties(prefix = "helpdesk.bootstrap.super-admin")
-public record BootstrapProperties(String email, String password, String name) {
+public record BootstrapProperties(String email, String password, String name, boolean resetPassword) {
 
     /** The first super admin controls every organization, so its password must be substantial. */
     static final int MIN_PASSWORD_LENGTH = 12;

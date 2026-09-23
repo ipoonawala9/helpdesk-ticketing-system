@@ -49,8 +49,14 @@ export function PunchStrip({ ticket }: { ticket: Ticket }) {
   )
 }
 
-/** The signature header of a ticket: an amber stub torn along a perforation. */
-export function TicketStub({ ticket }: { ticket: Ticket }) {
+/**
+ * The signature header of a ticket: an amber stub torn along a perforation.
+ *
+ * On a ticket's own page the title is the page heading; used as an
+ * illustration elsewhere it must not claim the page's only h1.
+ */
+export function TicketStub({ ticket, heading = 'h1' }: { ticket: Ticket; heading?: 'h1' | 'p' }) {
+  const Title = heading
   return (
     <div className="stub-frame">
       <article className="stub" aria-labelledby={`ticket-${ticket.id}-title`}>
@@ -66,7 +72,7 @@ export function TicketStub({ ticket }: { ticket: Ticket }) {
         </div>
         <div className="stub-body">
           <div className="stack" style={{ gap: 'var(--space-2)' }}>
-            <h1 id={`ticket-${ticket.id}-title`} className="stub-title">{ticket.title}</h1>
+            <Title id={`ticket-${ticket.id}-title`} className="stub-title">{ticket.title}</Title>
             <div className="stub-meta">
               <span>Opened by {ticket.customer.name}</span>
               <span>{ticket.organization.name}</span>

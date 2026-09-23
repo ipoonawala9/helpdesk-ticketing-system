@@ -1,12 +1,13 @@
 import { useMutation } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
-import { Navigate, useLocation, useNavigate } from 'react-router'
+import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 import type { Ticket } from '../api/types'
 import { useAuth } from '../auth/AuthContext'
 import { BrandMark } from '../components/Brand'
 import { Notice, errorMessage } from '../components/Feedback'
 import { TextField } from '../components/Fields'
 import { TicketStub } from '../components/TicketBits'
+import { DEMO_ACCOUNTS, demoEnabled, demoPassword } from '../lib/demo'
 import { useDocumentTitle } from '../lib/hooks'
 
 // An illustration of the ticket stub, not data from the API.
@@ -26,9 +27,12 @@ export function LoginPage() {
   const { user, signIn, lastSignOutReason } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const from = (location.state as { from?: string } | null)?.from ?? '/dashboard'
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const state = location.state as { from?: string; demo?: string } | null
+  const from = state?.from ?? '/dashboard'
+  // Arriving from a demo card on the landing page fills the form in.
+  const chosenDemo = demoEnabled ? DEMO_ACCOUNTS.find((account) => account.role === state?.demo) : undefined
+  const [email, setEmail] = useState(chosenDemo?.email ?? '')
+  const [password, setPassword] = useState(chosenDemo ? demoPassword : '')
 
   const login = useMutation({
     mutationFn: () => signIn(email.trim(), password),
@@ -44,16 +48,17 @@ export function LoginPage() {
 
   return (
     <div className="login">
-      <section className="login-art" aria-hidden="true">
-        <div className="brand" style={{ padding: 0 }}><BrandMark size={26} /> HelpDesk</div>
+      <section className="login-art">
+        <Link className="brand" to="/" style={{ padding: 0 }}><BrandMark size={26} /> HelpDesk</Link>
         <div className="stack" style={{ gap: 'var(--space-5)' }}>
           <h1 className="login-headline">Every issue gets a ticket. Every ticket gets seen through.</h1>
           <p>Customers report problems, admins route them to the right agent, and everyone sees exactly where a ticket stands until it's closed.</p>
         </div>
-        <div className="login-demo-stub"><TicketStub ticket={SAMPLE} /></div>
+        <div className="login-demo-stub"><TicketStub ticket={SAMPLE} heading="p" /></div>
       </section>
 
       <section className="login-panel">
+        <Link className="landing-link" to="/" style={{ padding: 0, alignSelf: 'flex-start' }}>← Back to home</Link>
         <div className="stack" style={{ gap: 'var(--space-2)' }}>
           <h2 style={{ fontSize: 'var(--text-lg)' }}>Sign in</h2>
           <p className="muted">Use the email and password your organization gave you.</p>
@@ -71,6 +76,25 @@ export function LoginPage() {
             {login.isPending ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+        {demoEnabled && (
+          <div className="stack" style={{ gap: 'var(--space-2)' }}>
+            <hr className="divider" />
+            <p className="field-hint">Demo accounts, filled in for you:</p>
+            <div className="chip-group">
+              {DEMO_ACCOUNTS.map((account) => (
+                <button
+                  key={account.role}
+                  type="button"
+                  className="chip"
+                  aria-pressed={email === account.email}
+                  onClick={() => { setEmail(account.email); setPassword(demoPassword) }}
+                >
+                  {account.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <p className="field-hint">No account? Ask your organization's HelpDesk administrator to add you.</p>
       </section>
     </div>

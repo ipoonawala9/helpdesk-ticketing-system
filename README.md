@@ -1608,6 +1608,7 @@ All sensitive values are driven by environment variables:
 | `BOOTSTRAP_SUPER_ADMIN_EMAIL` | Email of the first super admin, created on startup if it does not exist |
 | `BOOTSTRAP_SUPER_ADMIN_PASSWORD` | That super admin's initial password, at least 12 characters; the application refuses to start with a shorter one. After the first start, sign in and change it, then remove the variable |
 | `BOOTSTRAP_SUPER_ADMIN_NAME` | Optional display name, default `Super Admin` |
+| `BOOTSTRAP_SUPER_ADMIN_RESET_PASSWORD` | `false` by default. `true` resets the existing super admin's password to `BOOTSTRAP_SUPER_ADMIN_PASSWORD` on the next start and reactivates the account: the way back in after a forgotten password. Unset it afterwards |
 | `API_DOCS_ENABLED` | `true` (default) serves Swagger UI and the OpenAPI document; `false` hides both |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API from another site, such as the hosted frontend (`https://helpdesk-web.onrender.com`). Empty by default, which allows no cross-origin calls. `*` is refused |
 
@@ -1659,6 +1660,11 @@ environment, for example with `HELPDESK_TICKETS_ADMIN_CLOSE_AFTER=PT2H` or `HELP
 
 ## Frontend
 
+The site opens on a **public landing page** explaining what HelpDesk is, how a
+ticket moves, and who each role is for; signing in is one click from it, and a
+signed-in visitor goes straight to their dashboard. There is no public sign-up:
+accounts are created by an administrator.
+
 A React + TypeScript + Vite app in [`frontend/`](frontend/README.md) covers every
 role's screens against the real API: customer, support agent, organization
 admin and super admin. It has protected, role-aware routes, a centralized API
@@ -1691,6 +1697,7 @@ Create a **Static Site** from this repository:
 | Build command | `npm ci && npm run build` |
 | Publish directory | `dist` |
 | Environment variable | `VITE_API_BASE_URL` = the backend's URL, e.g. `https://helpdesk-ticketing-system-mi7f.onrender.com` |
+| Optional, demo deployments only | `VITE_DEMO_MODE=true` and `VITE_DEMO_PASSWORD=<seeded demo password>` add one-click demo sign-in for the four roles. Anything in a `VITE_` variable is public, so never set these for a deployment with real data |
 | Redirects/Rewrites | Rewrite `/*` to `/index.html`, so links such as `/tickets/42` load the app |
 
 Then allow the site to call the API by setting `CORS_ALLOWED_ORIGINS` on the
@@ -1811,6 +1818,15 @@ the API healthy once `/actuator/health/liveness` reports `UP`.
 | Follow the API's logs | `docker compose logs -f api` |
 | Stop, keeping data | `docker compose down` |
 | Stop and delete all data | `docker compose down -v` |
+
+### When the stack will not start
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `api` restarts, logs show `FATAL: password authentication failed for user "helpdesk"` | `DB_PASSWORD` in `.env` was changed after the database volume was created. PostgreSQL only applies `POSTGRES_PASSWORD` when it first initialises its data directory | Change the password inside the running database, which keeps the data: `docker compose exec db psql -U helpdesk -d helpdesk -c "ALTER USER helpdesk WITH PASSWORD 'the-value-from-.env';"` then `docker compose restart api`. Or start over with `docker compose down -v` |
+| `api` restarts, logs show `Unable to determine Dialect` | Same as above: the API cannot reach the database at all | As above; the dialect error is a symptom, not the cause |
+| Signing in as the super admin fails after changing `BOOTSTRAP_SUPER_ADMIN_PASSWORD` | That variable only applies when the account is created. An existing account keeps its password, and the log says so at startup | Sign in with the old password and change it in the app, or set `BOOTSTRAP_SUPER_ADMIN_RESET_PASSWORD=true` for one restart, then unset it |
+| `docker compose up` exits with `Set DB_PASSWORD in .env` | No `.env`, or the value is empty | `cp .env.example .env` and fill it in |
 
 ---
 

@@ -102,6 +102,29 @@ show, so people are not offered actions that would be refused. It is not
 security: the backend checks every request and has its own tests for those
 rules. `lib/permissions.test.ts` checks that this copy stays in step with them.
 
+### Routes
+
+| Path | Who sees it |
+|---|---|
+| `/` | Public landing page: what HelpDesk is, how a ticket moves, who each role is for. A signed-in visitor is sent to their dashboard |
+| `/login` | Sign-in form. One form for everyone: what you can do comes from your account, never from a choice made here |
+| everything else | Behind sign-in, and each screen is limited to the roles that can use it |
+
+### Demo mode
+
+For a public demo holding throwaway data, set at build time:
+
+```
+VITE_DEMO_MODE=true
+VITE_DEMO_PASSWORD=<the seeded demo password>
+```
+
+The landing and sign-in pages then offer one-click demo accounts for the four
+roles. Emails default to the seeded demo users and can be overridden with
+`VITE_DEMO_CUSTOMER_EMAIL`, `VITE_DEMO_AGENT_EMAIL`, `VITE_DEMO_ORG_ADMIN_EMAIL`
+and `VITE_DEMO_SUPER_ADMIN_EMAIL`. Everything in a `VITE_` variable is readable
+by every visitor, so never enable this for a deployment with real data.
+
 ### Screens
 
 | Role | Screens |

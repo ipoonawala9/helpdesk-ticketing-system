@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Locale;
 
 /**
@@ -54,7 +55,14 @@ public class SecurityStartupTasks {
         return users.size();
     }
 
-    /** Creates the configured super admin unless an account with that email already exists. */
+    /**
+     * Creates the configured super admin, or, if that account already exists,
+     * reports whether the configured password is actually in use.
+     *
+     * <p>The password of an existing account is only replaced when
+     * {@code reset-password} is set, which is the way back in after a
+     * forgotten super admin password.
+     */
     @Transactional
     public void createBootstrapSuperAdmin() {
         if (!bootstrap.isConfigured()) {
@@ -66,7 +74,9 @@ public class SecurityStartupTasks {
         }
 
         String email = bootstrap.email().strip().toLowerCase(Locale.ROOT);
-        if (userRepository.existsByEmailIgnoreCase(email)) {
+        Optional<User> existing = userRepository.findByEmailIgnoreCase(email);
+        if (existing.isPresent()) {
+            reconcileExistingSuperAdmin(existing.get());
             return;
         }
 
@@ -79,5 +89,27 @@ public class SecurityStartupTasks {
         userRepository.save(admin);
 
         log.info("Created bootstrap SUPER_ADMIN {}", email);
+    }
+
+    /**
+     * The configured password is not applied to an account that already
+     * exists, because that would silently reset it on every restart. Say so
+     * plainly when the two differ, and honour an explicit reset.
+     */
+    private void reconcileExistingSuperAdmin(User existing) {
+        if (bootstrap.resetPassword()) {
+            existing.setPassword(passwordEncoder.encode(bootstrap.password()));
+            existing.setActive(true);
+            userRepository.save(existing);
+            log.warn("Reset the password of {} because BOOTSTRAP_SUPER_ADMIN_RESET_PASSWORD is set. "
+                    + "Unset it again so the next restart does not reset the password once more.", existing.getEmail());
+            return;
+        }
+        if (!passwordEncoder.matches(bootstrap.password(), existing.getPassword())) {
+            log.warn("{} already exists and its password is NOT the one in BOOTSTRAP_SUPER_ADMIN_PASSWORD. "
+                    + "The configured password is only used when the account is first created. Sign in with the "
+                    + "existing password and change it in the app, or set BOOTSTRAP_SUPER_ADMIN_RESET_PASSWORD=true "
+                    + "for one restart to reset it.", existing.getEmail());
+        }
     }
 }
