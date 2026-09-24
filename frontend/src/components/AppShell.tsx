@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import type { Role } from '../api/types'
 import { useAuth, useCurrentUser } from '../auth/AuthContext'
 import { ROLE_LABEL, initials } from '../lib/format'
+import { useDrawerDrag } from '../lib/useDrawerDrag'
 import { BrandMark } from './Brand'
 
 interface NavItem {
@@ -38,7 +39,9 @@ export function AppShell() {
   const user = useCurrentUser()
   const { signOut } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
-  const closeMenu = () => setMenuOpen(false)
+  const closeMenu = useCallback(() => setMenuOpen(false), [])
+  // On a narrow screen the drawer can also simply be pushed out of the way.
+  const { drawerRef, shellRef } = useDrawerDrag(menuOpen, closeMenu)
 
   useEffect(() => {
     // Warm the screens this role reaches next, once the current one is idle.
@@ -54,7 +57,7 @@ export function AppShell() {
   return (
     <>
       <a className="skip-link" href="#main">Skip to content</a>
-      <div className="shell">
+      <div className="shell" ref={shellRef}>
         <header className="topbar">
           <NavLink to="/dashboard" className="brand"><BrandMark /> HelpDesk</NavLink>
           <button
@@ -69,9 +72,9 @@ export function AppShell() {
           </button>
         </header>
 
-        {menuOpen && <div className="scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
+        {menuOpen && <div className="scrim" onClick={closeMenu} aria-hidden="true" />}
 
-        <aside id="sidebar" className="sidebar" data-open={menuOpen}>
+        <aside id="sidebar" className="sidebar" ref={drawerRef} data-open={menuOpen}>
           <NavLink to="/dashboard" className="brand" onClick={closeMenu}><BrandMark /> HelpDesk</NavLink>
           <nav aria-label="Main">
             <div className="nav-label">{user.organization?.name ?? 'All organizations'}</div>

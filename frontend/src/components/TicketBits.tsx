@@ -61,10 +61,8 @@ export function TicketStub({ ticket, heading = 'h1' }: { ticket: Ticket; heading
     <div className="stub-frame">
       <article className="stub" aria-labelledby={`ticket-${ticket.id}-title`}>
         <div className="stub-band">
-          <div>
-            <div className="stub-eyebrow">Ticket</div>
-            <div className="stub-number">{ticket.ticketNumber}</div>
-          </div>
+          {/* The number needs no label: the stub it is printed on is the label. */}
+          <div className="stub-number">{ticket.ticketNumber}</div>
           <div className="stack" style={{ gap: 'var(--space-2)' }}>
             <span className="stub-eyebrow">{CATEGORY_LABEL[ticket.category]}</span>
             <PriorityBadge priority={ticket.priority} />

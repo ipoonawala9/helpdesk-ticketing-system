@@ -36,6 +36,17 @@
   --text-lg: 1.375rem;
   --text-xl: 1.875rem;
 
+  /*
+   * Motion. --ease-out is a decelerating curve: it leaves fast and lands
+   * softly, so a transition reads as something settling rather than sliding.
+   * Presses are near-instant going in and unhurried coming back out, which is
+   * how a physical button behaves.
+   */
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-in: cubic-bezier(0.4, 0, 0.6, 1);
+  --press-in: 70ms;
+  --press-out: 320ms;
+
   --radius: 6px;
   --space-1: 4px;
   --space-2: 8px;
