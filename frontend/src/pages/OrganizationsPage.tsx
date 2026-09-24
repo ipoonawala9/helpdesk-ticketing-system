@@ -23,6 +23,7 @@ export function OrganizationsPage() {
     queryKey: queryKeys.organizationList(filters),
     queryFn: () => organizationsApi.list(filters),
     placeholderData: keepPreviousData,
+    staleTime: 5 * 60_000,
   })
 
   function update(changes: Record<string, string | undefined>) {

@@ -20,6 +20,10 @@ export const authApi = {
   me: () => request<User>('GET', '/api/auth/me'),
   changePassword: (currentPassword: string, newPassword: string) =>
     request<void>('POST', '/api/auth/password', { body: { currentPassword, newPassword } }),
+  forgotPassword: (email: string) =>
+    request<void>('POST', '/api/auth/forgot-password', { body: { email }, anonymous: true }),
+  resetPassword: (token: string, newPassword: string) =>
+    request<void>('POST', '/api/auth/reset-password', { body: { token, newPassword }, anonymous: true }),
 }
 
 export const ticketsApi = {

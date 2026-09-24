@@ -4,7 +4,7 @@ import { ApiError } from '../api/client'
 import { authApi } from '../api/endpoints'
 import { useAuth, useCurrentUser } from '../auth/AuthContext'
 import { ErrorState, Notice, SkeletonRows, errorMessage } from '../components/Feedback'
-import { TextField } from '../components/Fields'
+import { PasswordField } from '../components/Fields'
 import { ROLE_LABEL, initials } from '../lib/format'
 import { useDocumentTitle } from '../lib/hooks'
 import { queryKeys } from '../lib/queryKeys'
@@ -111,10 +111,10 @@ function ChangePassword() {
       </div>
       <form className="card-body stack" onSubmit={submit} noValidate>
         {change.isError && !fieldErrorShown && <Notice tone="error">{errorMessage(change.error)}</Notice>}
-        <TextField label="Current password" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} error={errors.currentPassword} />
+        <PasswordField label="Current password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} error={errors.currentPassword} />
         <div className="form-grid">
-          <TextField label="New password" type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} error={errors.newPassword} hint="At least 8 characters." maxLength={100} />
-          <TextField label="Confirm new password" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} error={errors.confirmPassword} maxLength={100} />
+          <PasswordField label="New password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} error={errors.newPassword} hint="At least 8 characters." maxLength={100} />
+          <PasswordField label="Confirm new password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} error={errors.confirmPassword} maxLength={100} />
         </div>
         <div className="form-actions">
           <button type="submit" className="button" disabled={change.isPending}>{change.isPending ? 'Changing…' : 'Change password'}</button>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import type { Role } from '../api/types'
 import { useAuth, useCurrentUser } from '../auth/AuthContext'
@@ -39,6 +39,17 @@ export function AppShell() {
   const { signOut } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
   const closeMenu = () => setMenuOpen(false)
+
+  useEffect(() => {
+    // Warm the screens this role reaches next, once the current one is idle.
+    const idle = window.requestIdleCallback?.(() => {
+      void import('../pages/TicketsPage')
+      void import('../pages/TicketDetailPage')
+      if (user.role === 'ORG_ADMIN' || user.role === 'SUPER_ADMIN') void import('../pages/UsersPage')
+      if (user.role === 'CUSTOMER') void import('../pages/NewTicketPage')
+    })
+    return () => (idle === undefined ? undefined : window.cancelIdleCallback?.(idle))
+  }, [user.role])
 
   return (
     <>

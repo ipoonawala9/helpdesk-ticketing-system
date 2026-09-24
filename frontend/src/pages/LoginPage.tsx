@@ -5,7 +5,7 @@ import type { Ticket } from '../api/types'
 import { useAuth } from '../auth/AuthContext'
 import { BrandMark } from '../components/Brand'
 import { Notice, errorMessage } from '../components/Feedback'
-import { TextField } from '../components/Fields'
+import { PasswordField, TextField } from '../components/Fields'
 import { TicketStub } from '../components/TicketBits'
 import { DEMO_ACCOUNTS, demoEnabled, demoPassword } from '../lib/demo'
 import { useDocumentTitle } from '../lib/hooks'
@@ -71,7 +71,10 @@ export function LoginPage() {
 
         <form className="stack" onSubmit={submit}>
           <TextField label="Email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
-          <TextField label="Password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <PasswordField label="Password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <div className="row" style={{ justifyContent: 'flex-end', marginTop: 'calc(var(--space-2) * -1)' }}>
+            <Link className="landing-link" to="/forgot-password" style={{ padding: 0 }}>Forgot your password?</Link>
+          </div>
           <button type="submit" className="button button-block" disabled={login.isPending || !email.trim() || !password}>
             {login.isPending ? 'Signing in…' : 'Sign in'}
           </button>

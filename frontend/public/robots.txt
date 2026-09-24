@@ -1,0 +1,12 @@
+# The public pages may be indexed; everything behind sign-in holds no public
+# content and is blocked to keep it out of search results.
+User-agent: *
+Allow: /$
+Allow: /login
+Disallow: /dashboard
+Disallow: /tickets
+Disallow: /users
+Disallow: /organizations
+Disallow: /profile
+Disallow: /reset-password
+Disallow: /forgot-password

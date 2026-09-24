@@ -494,6 +494,28 @@ as sign-in, so a stolen access token cannot be used to guess the password. The
 new password must be 8 to 100 characters and different from the current one.
 Tokens issued before the change stay valid until they expire.
 
+### Forgotten passwords
+
+```
+POST /api/auth/forgot-password   {"email": "dana@acme.com"}
+POST /api/auth/reset-password    {"token": "...", "newPassword": "..."}
+```
+
+Both return `204`. Asking for a link answers the same way whether or not the
+address has an account, so the endpoint cannot be used to find out who is
+registered.
+
+- The link is single-use, expires after 30 minutes, and asking again
+  invalidates the previous one.
+- Only a SHA-256 of the token is stored, so a copy of the database cannot be
+  used to take over an account.
+- Requests are limited to 3 per address per window, so nobody can use it to
+  flood an inbox.
+- **Delivery:** with no mail server configured the link is written to the
+  application log, which keeps the feature usable before email exists. Set
+  `spring.mail.*` and the link is emailed instead. `FRONTEND_BASE_URL` decides
+  the address in the link.
+
 ### Deactivating accounts
 
 ```
@@ -1610,6 +1632,9 @@ All sensitive values are driven by environment variables:
 | `BOOTSTRAP_SUPER_ADMIN_NAME` | Optional display name, default `Super Admin` |
 | `BOOTSTRAP_SUPER_ADMIN_RESET_PASSWORD` | `false` by default. `true` resets the existing super admin's password to `BOOTSTRAP_SUPER_ADMIN_PASSWORD` on the next start and reactivates the account: the way back in after a forgotten password. Unset it afterwards |
 | `API_DOCS_ENABLED` | `true` (default) serves Swagger UI and the OpenAPI document; `false` hides both |
+| `FRONTEND_BASE_URL` | Where the browser app is served, used to build password reset links. Default `http://localhost:5173` |
+| `MAIL_FROM` | Sender address for password reset emails. Default `no-reply@helpdesk.local` |
+| `SPRING_MAIL_HOST`, `SPRING_MAIL_PORT`, `SPRING_MAIL_USERNAME`, `SPRING_MAIL_PASSWORD` | Set these to email reset links instead of writing them to the log |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API from another site, such as the hosted frontend (`https://helpdesk-web.onrender.com`). Empty by default, which allows no cross-origin calls. `*` is refused |
 
 `ddl-auto=update` means Hibernate will automatically create or alter tables to match the entity definitions on startup.

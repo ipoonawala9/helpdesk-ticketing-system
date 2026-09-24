@@ -60,7 +60,6 @@ export function LandingPage() {
 
       <section className="landing-hero">
         <div className="stack" style={{ gap: 'var(--space-5)' }}>
-          <span className="landing-eyebrow">Support desk for multi-organization teams</span>
           <h1 className="landing-title">Every issue gets a ticket. Every ticket gets seen through.</h1>
           <p className="landing-lead">
             HelpDesk gives each customer's problem a number, an owner and a visible position in its lifecycle,

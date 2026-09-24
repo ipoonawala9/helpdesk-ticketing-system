@@ -37,24 +37,32 @@ public class LoginAttemptLimiter {
     private record Attempts(int failures, Instant firstFailure, Instant blockedUntil) {
     }
 
-    /** Throws if sign-in for this email is currently blocked. */
-    public void checkAllowed(String email) {
-        Attempts current = attempts.get(key(email));
+    /** Throws if attempts for this key are currently blocked. */
+    public void checkAllowed(String key) {
+        Attempts current = attempts.get(normalise(key));
         Instant now = clock.instant();
         if (current != null && current.blockedUntil() != null && now.isBefore(current.blockedUntil())) {
             throw new TooManyLoginAttemptsException(Duration.between(now, current.blockedUntil()));
         }
     }
 
-    public void recordFailure(String email) {
+    public void recordFailure(String key) {
+        recordFailure(key, properties.maxFailures(), properties.window());
+    }
+
+    /**
+     * Counts an attempt against limits of the caller's choosing, for actions
+     * that are not sign-in, such as asking for a password reset link.
+     */
+    public void recordFailure(String key, int maxFailures, Duration window) {
         Instant now = clock.instant();
-        attempts.compute(key(email), (ignored, current) -> {
+        attempts.compute(normalise(key), (ignored, current) -> {
             boolean expired = current == null
                     || (current.blockedUntil() != null && !now.isBefore(current.blockedUntil()))
-                    || (current.blockedUntil() == null && !now.isBefore(current.firstFailure().plus(properties.window())));
+                    || (current.blockedUntil() == null && !now.isBefore(current.firstFailure().plus(window)));
             int failures = expired ? 1 : current.failures() + 1;
             Instant first = expired ? now : current.firstFailure();
-            Instant blockedUntil = failures >= properties.maxFailures() ? now.plus(properties.window()) : null;
+            Instant blockedUntil = failures >= maxFailures ? now.plus(window) : null;
             return new Attempts(failures, first, blockedUntil);
         });
         if (attempts.size() > PURGE_THRESHOLD) {
@@ -62,8 +70,8 @@ public class LoginAttemptLimiter {
         }
     }
 
-    public void recordSuccess(String email) {
-        attempts.remove(key(email));
+    public void recordSuccess(String key) {
+        attempts.remove(normalise(key));
     }
 
     private void purgeExpired(Instant now) {
@@ -74,7 +82,7 @@ public class LoginAttemptLimiter {
         });
     }
 
-    private static String key(String email) {
-        return email == null ? "" : email.strip().toLowerCase(Locale.ROOT);
+    private static String normalise(String key) {
+        return key == null ? "" : key.strip().toLowerCase(Locale.ROOT);
     }
 }

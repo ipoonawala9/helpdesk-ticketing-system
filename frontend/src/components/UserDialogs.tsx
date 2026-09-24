@@ -10,7 +10,7 @@ import { queryKeys } from '../lib/queryKeys'
 import { notify } from '../lib/toast'
 import { Dialog } from './Dialog'
 import { Notice, errorMessage } from './Feedback'
-import { SelectField, TextField } from './Fields'
+import { PasswordField, SelectField, TextField } from './Fields'
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -84,7 +84,7 @@ export function CreateUserDialog({ open, onClose, defaultRole, defaultOrganizati
             {roles.map((role) => <option key={role} value={role}>{ROLE_LABEL[role]}</option>)}
           </SelectField>
           <TextField label="Email" type="email" value={form.email} onChange={set('email')} error={errors.email} autoComplete="off" required className="span-2" maxLength={200} />
-          <TextField label="Initial password" type="password" value={form.password} onChange={set('password')} error={errors.password} hint="Share it with them privately. At least 8 characters." autoComplete="new-password" required maxLength={100} />
+          <PasswordField label="Initial password" value={form.password} onChange={set('password')} error={errors.password} hint="Share it privately; they can change it in their profile." autoComplete="new-password" required maxLength={100} />
           <TextField label="Phone (optional)" type="tel" value={form.phoneNumber} onChange={set('phoneNumber')} error={errors.phoneNumber} autoComplete="off" />
           {me.role === 'SUPER_ADMIN' && form.role !== 'SUPER_ADMIN' && (
             <SelectField label="Organization" value={form.organizationId} onChange={set('organizationId')} error={errors.organizationId} className="span-2">

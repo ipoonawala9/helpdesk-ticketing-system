@@ -107,8 +107,33 @@ rules. `lib/permissions.test.ts` checks that this copy stays in step with them.
 | Path | Who sees it |
 |---|---|
 | `/` | Public landing page: what HelpDesk is, how a ticket moves, who each role is for. A signed-in visitor is sent to their dashboard |
+| `/forgot-password`, `/reset-password` | Ask for a reset link, and set a new password from the link |
 | `/login` | Sign-in form. One form for everyone: what you can do comes from your account, never from a choice made here |
 | everything else | Behind sign-in, and each screen is limited to the roles that can use it |
+
+### Performance
+
+Screens behind sign-in are split into their own chunks and fetched when first
+opened, so a visitor to the landing or sign-in page downloads none of the app.
+Once signed in, the screens a role reaches next are prefetched while the
+browser is idle. Server state is cached by TanStack Query and invalidated after
+every change; lists that change slowly, such as organizations, are cached for
+longer.
+
+Measured with Lighthouse against the production build, served compressed as a
+host would:
+
+| | before splitting | after |
+|---|---|---|
+| Performance | 75 | 93 |
+| Accessibility | 95 | 100 |
+| SEO | 91 | 100 |
+| First Contentful Paint | 4.2 s | 2.6 s |
+| Page weight | 605 KiB | 270 KiB |
+
+The remaining ~1 s of first paint is inherent to client-side rendering: the
+browser runs JavaScript before anything appears. Prerendering the landing page
+to static HTML at build time is the next step if that matters.
 
 ### Demo mode
 

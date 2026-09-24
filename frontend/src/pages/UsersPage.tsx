@@ -54,6 +54,7 @@ export function UsersPage() {
     queryKey: queryKeys.userList(filters),
     queryFn: () => usersApi.list(filters),
     placeholderData: keepPreviousData,
+    staleTime: 60_000,
   })
   const organizations = useQuery({
     queryKey: queryKeys.organizationList({ size: 100, sort: 'name,asc' }),
