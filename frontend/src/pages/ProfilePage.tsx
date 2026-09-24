@@ -26,7 +26,7 @@ export function ProfilePage() {
   const me = useQuery({ queryKey: queryKeys.me, queryFn: authApi.me, initialData: stored })
 
   return (
-    <div className="page" style={{ maxWidth: 760 }}>
+    <div className="page page-narrow">
       <header className="page-header">
         <div className="row" style={{ gap: 'var(--space-4)' }}>
           <span className="avatar" style={{ width: 56, height: 56, fontSize: 'var(--text-md)', background: 'var(--stub)' }} aria-hidden="true">{initials(stored.name)}</span>
@@ -111,7 +111,10 @@ function ChangePassword() {
       </div>
       <form className="card-body stack" onSubmit={submit} noValidate>
         {change.isError && !fieldErrorShown && <Notice tone="error">{errorMessage(change.error)}</Notice>}
-        <PasswordField label="Current password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} error={errors.currentPassword} />
+        {/* One column each, so the three password boxes share a left edge and a width. */}
+        <div className="form-grid">
+          <PasswordField label="Current password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} error={errors.currentPassword} />
+        </div>
         <div className="form-grid">
           <PasswordField label="New password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} error={errors.newPassword} hint="At least 8 characters." maxLength={100} />
           <PasswordField label="Confirm new password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} error={errors.confirmPassword} maxLength={100} />

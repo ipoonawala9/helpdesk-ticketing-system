@@ -97,6 +97,13 @@ export function TicketsPage() {
   const hasFilters = !!(filters.status?.length || filters.priority?.length || filters.category?.length
     || filters.customerId || filters.assignedAgentId || filters.unassigned || filters.q)
 
+  // Scoping to one organization comes from where the viewer arrived, not from
+  // the filter bar, so clearing keeps it.
+  const clearFilters = () => {
+    setSearch('')
+    setParams(filters.organizationId ? { organizationId: String(filters.organizationId) } : {}, { replace: true })
+  }
+
   return (
     <div className="page">
       <header className="page-header">
@@ -142,8 +149,8 @@ export function TicketsPage() {
           <SelectField label="Sort" value={filters.sort} onChange={(e) => update({ sort: e.target.value })}>
             {SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </SelectField>
-          <fieldset className="field" style={{ border: 0, padding: 0, margin: 0, flexBasis: '100%' }}>
-            <legend className="field-label" style={{ marginBottom: 6 }}>Status</legend>
+          <fieldset className="filters-status">
+            <legend className="field-label">Status</legend>
             <div className="chip-group">
               {TICKET_STATUSES.map((status) => (
                 <button key={status} type="button" className="chip" aria-pressed={filters.status?.includes(status) ?? false} onClick={() => toggleStatus(status)}>
@@ -151,7 +158,7 @@ export function TicketsPage() {
                 </button>
               ))}
               {hasFilters && (
-                <button type="button" className="button button-quiet button-small" onClick={() => { setSearch(''); setParams(filters.organizationId ? { organizationId: String(filters.organizationId) } : {}, { replace: true }) }}>
+                <button type="button" className="button button-quiet button-small filters-clear" onClick={clearFilters}>
                   Clear filters
                 </button>
               )}
@@ -163,7 +170,14 @@ export function TicketsPage() {
         {tickets.isError && <ErrorState error={tickets.error} onRetry={() => tickets.refetch()} />}
         {tickets.data && tickets.data.content.length === 0 && (
           hasFilters
-            ? <EmptyState title="No tickets match these filters">Try removing a filter or searching for something else.</EmptyState>
+            ? (
+              <EmptyState
+                title="No tickets match these filters"
+                action={<button type="button" className="button button-secondary" onClick={clearFilters}>Clear filters</button>}
+              >
+                Try removing a filter, or search for something else.
+              </EmptyState>
+            )
             : user.role === 'CUSTOMER'
               ? <EmptyState title="You haven't reported anything yet" action={<Link to="/tickets/new" className="button">Report a problem</Link>}>When something isn't working, open a ticket and an agent will pick it up.</EmptyState>
               : <EmptyState title={isAdmin ? 'No tickets yet' : 'Nothing is assigned to you'}>{isAdmin ? 'Tickets appear here as customers report problems.' : 'Tickets appear here when an administrator assigns them to you.'}</EmptyState>

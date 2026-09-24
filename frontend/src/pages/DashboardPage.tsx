@@ -106,7 +106,7 @@ function CustomerDashboard({ user }: { user: User }) {
       <div className="grid-halves">
         <Queue
           title="Waiting for you"
-          description="Resolved tickets. Close them if the fix worked, or reopen them if not."
+          description="Resolved tickets. Close them, or reopen if not fixed."
           filters={{ status: ['RESOLVED'], sort: 'updatedAt,desc' }}
           empty="Nothing needs your confirmation."
           viewAll={ticketsLink({ status: 'RESOLVED' })}

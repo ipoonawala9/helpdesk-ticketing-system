@@ -43,7 +43,7 @@ export function NewTicketPage() {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 760 }}>
+    <div className="page page-narrow">
       <header className="page-header">
         <div>
           <h1>Report a problem</h1>
@@ -55,16 +55,19 @@ export function NewTicketPage() {
           <Notice tone="error">{errorMessage(create.error)}</Notice>
         )}
         <TextField label="Title" value={title} onChange={(e) => setTitle(e.target.value)} error={errors.title} maxLength={200} placeholder="e.g. Printer on floor 3 jams on every job" autoFocus />
-        <SelectField
-          label="Category"
-          value={category}
-          onChange={(e) => setCategory(e.target.value as TicketCategory)}
-          error={errors.category}
-          hint={category ? CATEGORY_HINT[category] : undefined}
-        >
-          <option value="" disabled>Choose a category</option>
-          {TICKET_CATEGORIES.map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>)}
-        </SelectField>
+        {/* A menu of eight short words does not need the width of the page. */}
+        <div className="form-grid">
+          <SelectField
+            label="Category"
+            value={category}
+            onChange={(e) => setCategory(e.target.value as TicketCategory)}
+            error={errors.category}
+            hint={category ? CATEGORY_HINT[category] : undefined}
+          >
+            <option value="" disabled>Choose a category</option>
+            {TICKET_CATEGORIES.map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>)}
+          </SelectField>
+        </div>
         <TextAreaField
           label="What's happening?"
           value={description}

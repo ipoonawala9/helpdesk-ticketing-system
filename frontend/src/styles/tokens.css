@@ -48,8 +48,15 @@
   --press-out: 320ms;
 
   --radius: 6px;
+  /*
+   * Spacing. The half steps exist because the insides of small controls need a
+   * value between 4 and 8 and between 8 and 12; without them the stylesheet
+   * reaches for loose pixels and rows stop sharing a rhythm.
+   */
   --space-1: 4px;
+  --space-1h: 6px;
   --space-2: 8px;
+  --space-2h: 10px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 24px;
