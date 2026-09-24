@@ -1896,7 +1896,7 @@ Create a **combined service** (it builds and runs in one) from this repository:
 | Build context | `/` |
 | Branch | `main` |
 | Port | `8080`, public, HTTP |
-| Health check | HTTP `GET /actuator/health/liveness`, initial delay `60s` |
+| Health check | HTTP `GET /actuator/health/liveness`, initial delay `120s`, failure threshold `5` |
 
 The port is already declared by `EXPOSE 8080` in the Dockerfile, so it should be
 detected for you, and a public port is given a `code.run` domain with a TLS
@@ -1904,7 +1904,9 @@ certificate automatically.
 
 Use the liveness probe rather than `/actuator/health`: liveness does not touch
 the database, so a database still waking up cannot get the container restarted
-underneath it.
+underneath it. Be generous with the initial delay. The application starts in
+about seven seconds on a laptop, but a free instance has a fifth of a CPU, and a
+probe that gives up too early restarts the container mid-startup, forever.
 
 Then set the runtime variables, alongside the three the secret group provides:
 
