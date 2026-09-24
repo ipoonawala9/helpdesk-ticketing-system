@@ -2,7 +2,7 @@
 
 A RESTful backend API for managing support tickets across multiple organizations. Built with Spring Boot 4, Java 25, and PostgreSQL.
 
-> **Live API:** https://helpdesk-ticketing-system-mi7f.onrender.com
+> **Deploying it yourself:** see [Deployment](#deployment).
 
 ---
 
@@ -36,6 +36,7 @@ A RESTful backend API for managing support tickets across multiple organizations
 - [Frontend](#frontend)
 - [Running Locally](#running-locally)
 - [Running with Docker](#running-with-docker)
+- [Deployment](#deployment)
 - [Postman Screenshots](#postman-screenshots)
 
 ---
@@ -673,7 +674,7 @@ with `403`.
 
 ## API Reference
 
-Base URL: `https://helpdesk-ticketing-system-mi7f.onrender.com`
+Base URL: your own deployment, or `http://localhost:8080` when running locally.
 
 Every endpoint below except login requires `Authorization: Bearer <token>`.
 See [Authentication & Authorization](#authentication--authorization) for which
@@ -1626,6 +1627,7 @@ All sensitive values are driven by environment variables:
 | `DB_URL` | JDBC connection URL, e.g. `jdbc:postgresql://localhost:5432/helpdesk` |
 | `DB_USERNAME` | PostgreSQL username |
 | `DB_PASSWORD` | PostgreSQL password |
+| `DB_POOL_SIZE` | Maximum database connections, default `5`. Sized for a small managed database; raise it on a plan with a larger connection budget |
 | `JWT_SECRET` | **Required.** Random signing key of at least 32 characters. The application refuses to start without it. Generate one with `openssl rand -base64 48` |
 | `BOOTSTRAP_SUPER_ADMIN_EMAIL` | Email of the first super admin, created on startup if it does not exist |
 | `BOOTSTRAP_SUPER_ADMIN_PASSWORD` | That super admin's initial password, at least 12 characters; the application refuses to start with a shorter one. After the first start, sign in and change it, then remove the variable |
@@ -1635,7 +1637,7 @@ All sensitive values are driven by environment variables:
 | `FRONTEND_BASE_URL` | Where the browser app is served, used to build password reset links. Default `http://localhost:5173` |
 | `MAIL_FROM` | Sender address for password reset emails. Default `no-reply@helpdesk.local` |
 | `SPRING_MAIL_HOST`, `SPRING_MAIL_PORT`, `SPRING_MAIL_USERNAME`, `SPRING_MAIL_PASSWORD` | Set these to email reset links instead of writing them to the log |
-| `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API from another site, such as the hosted frontend (`https://helpdesk-web.onrender.com`). Empty by default, which allows no cross-origin calls. `*` is refused |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API from another site, such as the hosted frontend (`https://helpdesk-web.pages.dev`). Empty by default, which allows no cross-origin calls. `*` is refused |
 
 `ddl-auto=update` means Hibernate will automatically create or alter tables to match the entity definitions on startup.
 
@@ -1712,23 +1714,6 @@ and a responsive layout. Details are in [frontend/README.md](frontend/README.md)
    into an empty local database with `npm run seed:demo` (see
    [frontend/README.md](frontend/README.md#demo-data)).
 
-### Deploying the frontend on Render
-
-Create a **Static Site** from this repository:
-
-| Setting | Value |
-|---|---|
-| Root directory | `frontend` |
-| Build command | `npm ci && npm run build` |
-| Publish directory | `dist` |
-| Environment variable | `VITE_API_BASE_URL` = the backend's URL, e.g. `https://helpdesk-ticketing-system-mi7f.onrender.com` |
-| Optional, demo deployments only | `VITE_DEMO_MODE=true` and `VITE_DEMO_PASSWORD=<seeded demo password>` add one-click demo sign-in for the four roles. Anything in a `VITE_` variable is public, so never set these for a deployment with real data |
-| Redirects/Rewrites | Rewrite `/*` to `/index.html`, so links such as `/tickets/42` load the app |
-
-Then allow the site to call the API by setting `CORS_ALLOWED_ORIGINS` on the
-**backend** service to the static site's URL, e.g.
-`https://helpdesk-web.onrender.com`.
-
 ---
 
 ## Running Locally
@@ -1767,8 +1752,6 @@ export BOOTSTRAP_SUPER_ADMIN_PASSWORD=choose-a-strong-password
 4. The API is available at `http://localhost:8080`. Log in as the bootstrap
    super admin with `POST /api/auth/login`, then create an organization and its
    users.
-
-> **Deployed API:** `https://helpdesk-ticketing-system-mi7f.onrender.com`
 
 ---
 
@@ -1852,6 +1835,181 @@ the API healthy once `/actuator/health/liveness` reports `UP`.
 | `api` restarts, logs show `Unable to determine Dialect` | Same as above: the API cannot reach the database at all | As above; the dialect error is a symptom, not the cause |
 | Signing in as the super admin fails after changing `BOOTSTRAP_SUPER_ADMIN_PASSWORD` | That variable only applies when the account is created. An existing account keeps its password, and the log says so at startup | Sign in with the old password and change it in the app, or set `BOOTSTRAP_SUPER_ADMIN_RESET_PASSWORD=true` for one restart, then unset it |
 | `docker compose up` exits with `Set DB_PASSWORD in .env` | No `.env`, or the value is empty | `cp .env.example .env` and fill it in |
+
+---
+
+## Deployment
+
+The API runs as a container on [Northflank](https://northflank.com)'s free
+Sandbox plan, which stays awake rather than sleeping between requests, next to a
+PostgreSQL addon on the same platform. The site is static, so it is served by
+[Cloudflare Pages](https://pages.cloudflare.com), whose free plan has no
+bandwidth cap and reads the `_headers` and `_redirects` files already in
+[`frontend/public/`](frontend/public).
+
+| Piece | Where | Why |
+|---|---|---|
+| API | Northflank service, built from the [Dockerfile](Dockerfile) | Free tier is always on, so the first request of the day is not a cold start |
+| Database | Northflank PostgreSQL addon | Same platform as the API, so no public hop and no hourly compute metering |
+| Site | Cloudflare Pages | Free, on a CDN, and already configured by `_headers` and `_redirects` |
+
+### The order matters
+
+The API has to allow the site's origin, and the site has to be built knowing the
+API's URL, so neither can be configured before the other exists. Deploy the API
+first with CORS left unset, then the site, then come back and tell the API about
+it. Vite writes `VITE_API_BASE_URL` into the JavaScript at build time, so
+changing it later means a rebuild, not a restart.
+
+### 1. The database
+
+Create an addon, choose **PostgreSQL 17**, take the smallest resources, and
+leave public access off — only the API needs to reach it.
+
+When it is running, open its connection details. Northflank exposes
+`JDBC_POSTGRES_URI`, `USERNAME` and `PASSWORD`, which are exactly the three
+values the API wants. Link them rather than copying them: create a secret group,
+add the addon to it, and alias
+
+| Northflank gives | Alias it to |
+|---|---|
+| `JDBC_POSTGRES_URI` | `DB_URL` |
+| `USERNAME` | `DB_USERNAME` |
+| `PASSWORD` | `DB_PASSWORD` |
+
+then apply the group to the API service. Rotating the database password then
+reaches the API on its own.
+
+If you copy the values by hand instead, note that a `postgresql://...` string is
+not a JDBC URL. `DB_URL` must start with `jdbc:postgresql://` and carry no
+credentials, for example
+`jdbc:postgresql://host:5432/helpdesk?sslmode=require`.
+
+### 2. The API
+
+Create a **combined service** (it builds and runs in one) from this repository:
+
+| Setting | Value |
+|---|---|
+| Build | Dockerfile |
+| Dockerfile path | `/Dockerfile` |
+| Build context | `/` |
+| Branch | `main` |
+| Port | `8080`, public, HTTP |
+| Health check | HTTP `GET /actuator/health/liveness`, initial delay `60s` |
+
+The port is already declared by `EXPOSE 8080` in the Dockerfile, so it should be
+detected for you, and a public port is given a `code.run` domain with a TLS
+certificate automatically.
+
+Use the liveness probe rather than `/actuator/health`: liveness does not touch
+the database, so a database still waking up cannot get the container restarted
+underneath it.
+
+Then set the runtime variables, alongside the three the secret group provides:
+
+| Variable | Value |
+|---|---|
+| `JWT_SECRET` | 32 characters or more of randomness. Generate with `openssl rand -base64 48`. The application refuses to start without it |
+| `BOOTSTRAP_SUPER_ADMIN_EMAIL` | The first administrator's address |
+| `BOOTSTRAP_SUPER_ADMIN_PASSWORD` | Their first password, at least 12 characters |
+| `API_DOCS_ENABLED` | `false`, unless the API reference is meant to be public |
+| `MAIL_FROM` | Optional. The sender address on password-reset emails |
+
+Store the secret ones as secrets, not plain environment variables, so they are
+masked in the UI and in logs.
+
+The build compiles the application with Maven inside the image, so the first
+build takes a few minutes. Watch the build log rather than the deploy log if it
+appears to hang.
+
+### 3. The site
+
+Create a Cloudflare Pages project from this repository:
+
+| Setting | Value |
+|---|---|
+| Root directory | `frontend` |
+| Build command | `npm ci && npm run build` |
+| Output directory | `dist` |
+| Node version | 22 or newer |
+
+Set one build variable, taking the value from the API's `code.run` domain, with
+no trailing slash:
+
+```
+VITE_API_BASE_URL=https://<your-api>.code.run
+```
+
+Everything in a `VITE_` variable is readable by anyone who opens the site, so
+nothing secret goes here. `VITE_DEMO_MODE` and `VITE_DEMO_PASSWORD` add the
+one-click role shortcuts and put a working password in public JavaScript; set
+them only on a deployment holding throwaway data. See
+[`frontend/.env.production.example`](frontend/.env.production.example).
+
+Redirects and security headers need no configuration: Cloudflare Pages reads
+[`_redirects`](frontend/public/_redirects), so deep links like `/tickets/42`
+load, and [`_headers`](frontend/public/_headers), which sets the content
+security policy and caching.
+
+### 4. Introduce them
+
+Back on the API service, set two more variables to the site's URL and redeploy:
+
+| Variable | Value |
+|---|---|
+| `CORS_ALLOWED_ORIGINS` | `https://<your-site>.pages.dev` — the browser cannot call the API without this |
+| `FRONTEND_BASE_URL` | The same URL. Password-reset links are built from it |
+
+Add any custom domain to `CORS_ALLOWED_ORIGINS` as well, comma-separated. The
+value is an exact origin match: scheme, host and port, no trailing slash and no
+wildcards.
+
+### 5. Check it
+
+```bash
+curl -s https://<your-api>.code.run/actuator/health/liveness     # {"status":"UP"}
+
+# The site's origin is allowed, and nothing else is.
+curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS \
+  https://<your-api>.code.run/api/auth/login \
+  -H 'Origin: https://<your-site>.pages.dev' \
+  -H 'Access-Control-Request-Method: POST'                        # 200
+
+curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS \
+  https://<your-api>.code.run/api/auth/login \
+  -H 'Origin: https://not-your-site.example' \
+  -H 'Access-Control-Request-Method: POST'                        # 403
+```
+
+Then open the site, sign in as the bootstrap administrator, and create an
+organization. If sign-in fails, the browser console says which of the two it is:
+a CORS message means step 4 is wrong, and a 502 or 503 means the API is not up.
+
+### Worth knowing
+
+**The schema is created by Hibernate, not by migrations.** `ddl-auto=update`
+builds the tables on first start, which is fine for a fresh database. It cannot
+express a rename or a backfill, and it does not version anything, so the second
+schema change is where it becomes a liability. Flyway is the next piece of work.
+
+**Changing `BOOTSTRAP_SUPER_ADMIN_PASSWORD` does nothing on its own** once the
+account exists. To reset a forgotten one, set
+`BOOTSTRAP_SUPER_ADMIN_RESET_PASSWORD=true`, restart once, then set it back to
+`false`.
+
+**Password-reset links are written to the log** until a mail server is
+configured. Set `SPRING_MAIL_HOST`, `SPRING_MAIL_PORT`, `SPRING_MAIL_USERNAME`
+and `SPRING_MAIL_PASSWORD` and they are emailed instead, with no code change.
+
+**The connection pool is tuned for a small free database**: five connections,
+none held idle, and no failure if the database is still waking up. Raise
+`DB_POOL_SIZE` if you move to a plan with a larger connection budget.
+
+**The free plan is a sandbox, not a production guarantee.** It has no
+availability commitment and the resource caps are low. It is right for a
+portfolio deployment and a demo, and the same Dockerfile moves to a paid plan,
+another platform or your own machine without changes.
 
 ---
 

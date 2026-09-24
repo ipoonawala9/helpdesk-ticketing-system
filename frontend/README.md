@@ -61,7 +61,7 @@ into the browser bundle and readable by anyone.
 
 | Variable | When | Meaning |
 |---|---|---|
-| `VITE_API_BASE_URL` | build time | The API's base URL, e.g. `https://helpdesk-ticketing-system-mi7f.onrender.com`. Leave empty in development. |
+| `VITE_API_BASE_URL` | build time | The API's base URL with no trailing slash, e.g. `https://helpdesk-api.code.run`. Leave empty in development, where the dev server proxies to `localhost:8080`. |
 | `DEV_API_PROXY_TARGET` | development | Where the dev server forwards `/api`. Default `http://localhost:8080`. |
 
 ## How it is put together
